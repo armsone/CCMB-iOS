@@ -21,16 +21,19 @@ struct DashboardView: View {
                 if let problem = store.refreshProblem {
                     banner(text: problem, isWarning: true)
                 }
+                if let nasError = store.nasConnectError {
+                    banner(text: nasError, isWarning: true)
+                }
                 if snapshot.isStale() {
-                    banner(
-                        text: "오래된 데이터입니다. Mac에서 CCMB가 실행 중이어야 새 값이 올라옵니다.",
-                        isWarning: true
-                    )
+                    banner(text: staleBannerText, isWarning: true)
                 } else if store.origin == .savedCopy {
                     banner(
                         text: "마지막으로 저장한 사본을 보여 주고 있습니다. 새로 고침하면 최신 값을 다시 불러옵니다.",
                         isWarning: false
                     )
+                }
+                if let addressChangedText {
+                    banner(text: addressChangedText, isWarning: true)
                 }
 
                 AutomaticRefreshCard(focus: snapshot.focusLimit, onPickFile: onPickFile)
@@ -39,7 +42,7 @@ struct DashboardView: View {
                     ForEach(primaryServices) { service in
                         if let usage = snapshot.services[service] {
                             NavigationLink {
-                                ServiceDetailView(usage: usage)
+                                ServiceDetailView(usage: usage, isNAS: store.displayedSource == .nas)
                             } label: {
                                 ServiceCardView(usage: usage)
                             }
@@ -50,13 +53,15 @@ struct DashboardView: View {
 
                 PassionSummaryCard(snapshot: snapshot)
 
-                Text(footnoteText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .padding(.top, 4)
+                if let footnoteText {
+                    Text(footnoteText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .padding(.top, 4)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -90,6 +95,11 @@ struct DashboardView: View {
                     } label: {
                         Label("Dropbox·Google Drive 파일 선택", systemImage: "folder")
                     }
+                    Button {
+                        store.requestNASLogin()
+                    } label: {
+                        Label("NAS에서 불러오기", systemImage: "externaldrive.connected.to.line.below")
+                    }
                 } label: {
                     Label("메뉴", systemImage: "line.3.horizontal")
                 }
@@ -97,13 +107,31 @@ struct DashboardView: View {
         }
     }
 
-    private var footnoteText: String {
-        switch store.preferredSource {
+    private var staleBannerText: String {
+        store.displayedSource == .nas
+            ? "오래된 데이터입니다. NAS에 다시 연결하거나 새로 고침해야 새 값이 올라옵니다."
+            : "오래된 데이터입니다. Mac에서 CCMB가 실행 중이어야 새 값이 올라옵니다."
+    }
+
+    private var footnoteText: String? {
+        switch store.displayedSource {
         case .cloud:
             return "Mac CCMB가 iCloud를 통해 사용량을 갱신합니다."
         case .file:
             return "선택한 파일에서 사용량을 불러옵니다."
+        case .nas:
+            return nil
         }
+    }
+
+    /// When the displayed NAS snapshot is from a server that no longer
+    /// matches the configured address, the data on screen must be labeled
+    /// honestly rather than silently appear to be from the new address.
+    private var addressChangedText: String? {
+        guard store.displayedSource == .nas,
+              let displayedAddress = store.displayedNASAddress,
+              displayedAddress != store.nasBaseURLString else { return nil }
+        return "이전 NAS의 데이터입니다. 새 NAS에 다시 연결해 주세요."
     }
 
     private var header: some View {
@@ -112,7 +140,7 @@ struct DashboardView: View {
                 .fill(snapshot.isStale() ? CCMBTheme.signalRed : Color.green)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
-            Text("Mac 수집 \(CCMBFormat.macCollectionTime(snapshot.newestFetchedAt))")
+            Text("\(collectionLabel) \(CCMBFormat.macCollectionTime(snapshot.newestFetchedAt))")
                 .fontWeight(.semibold)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
@@ -120,6 +148,10 @@ struct DashboardView: View {
         .font(.caption)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private var collectionLabel: String {
+        store.displayedSource == .nas ? "NAS 수집" : "Mac 수집"
     }
 
     private func banner(text: String, isWarning: Bool) -> some View {
@@ -139,6 +171,7 @@ struct DashboardView: View {
 }
 
 struct PassionSummaryCard: View {
+    @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
     let snapshot: UsageSnapshot
 
@@ -149,33 +182,25 @@ struct PassionSummaryCard: View {
                     .foregroundStyle(.orange)
                 Text("나의 AI 열정")
                     .font(.headline)
-                Text("최근 40회 갱신 소비")
+                Text(showsNASHistory ? "NAS 수집 · 3분 간격, 40개" : "최근 40회 갱신 소비")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
 
             if let history = snapshot.consumptionHistory {
-                HStack(spacing: 0) {
-                    ForEach(historyColumns(history)) { column in
-                        VStack(spacing: 4) {
-                            Text(column.caption)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.65)
-                            RefreshConsumptionBars(
-                                series: column.series,
-                                slotCount: history.slotCount
-                            )
-                            .frame(height: 56)
-                        }
-                        .frame(maxWidth: .infinity)
-                        if column.service != .gemini {
-                            Divider().padding(.horizontal, 5)
-                        }
-                    }
+                historyChart(history, codexUsesCredits: liveCodexUsesCredits, emptyCaption: nil, perSampleLabel: "갱신당")
+            } else if showsNASHistory, let nasHistory = snapshot.nasHistory, !nasHistory.isEmpty {
+                // The Codex unit is the one the NAS measured each sample in,
+                // recorded with the history itself.
+                historyChart(nasHistory.history, codexUsesCredits: nasHistory.codexUsesCredits, emptyCaption: "기록 없음", perSampleLabel: "3분당")
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    nasHistoryNote(nasHistory, now: context.date)
                 }
+            } else if showsNASHistory {
+                Text(nasHistoryWaitingText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("Mac CCMB가 다음 스냅샷을 올리면 세로형 기록 그래프가 표시됩니다.")
                     .font(.caption)
@@ -189,9 +214,70 @@ struct PassionSummaryCard: View {
         .accessibilityLabel("나의 AI 열정, 최근 갱신별 소비 기록")
     }
 
-    private func historyColumns(_ history: UsageConsumptionHistory) -> [ConsumptionHistoryColumn] {
-        let codexUsesCredits = (snapshot.services[.codex]?.windows.first { $0.id == "weekly" }?.remainingPercent ?? 1) <= 0
+    private var showsNASHistory: Bool {
+        snapshot.consumptionHistory == nil && store.displayedSource == .nas
+    }
+
+    private var liveCodexUsesCredits: Bool {
+        (snapshot.services[.codex]?.windows.first { $0.id == "weekly" }?.remainingPercent ?? 1) <= 0
             && (snapshot.services[.codex]?.creditBalance ?? 0) > 0
+    }
+
+    private func historyChart(
+        _ history: UsageConsumptionHistory,
+        codexUsesCredits: Bool,
+        emptyCaption: String?,
+        perSampleLabel: String
+    ) -> some View {
+        HStack(spacing: 0) {
+            ForEach(historyColumns(history, codexUsesCredits: codexUsesCredits, emptyCaption: emptyCaption, perSampleLabel: perSampleLabel)) { column in
+                VStack(spacing: 4) {
+                    Text(column.caption)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                    RefreshConsumptionBars(
+                        series: column.series,
+                        slotCount: history.slotCount
+                    )
+                    .frame(height: 56)
+                }
+                .frame(maxWidth: .infinity)
+                if column.service != .gemini {
+                    Divider().padding(.horizontal, 5)
+                }
+            }
+        }
+    }
+
+    /// NAS history is recorded by the NAS itself every 3 minutes; its age is
+    /// the NAS's last accepted reading, never the download time.
+    private func nasHistoryNote(_ nasHistory: NASConsumptionHistory, now: Date) -> some View {
+        let isStale = now.timeIntervalSince(nasHistory.collectedAt) > UsageSnapshot.staleAfterSeconds
+        var parts = [
+            "마지막 기록 \(CCMBFormat.macCollectionTime(nasHistory.collectedAt, now: now)) (\(CCMBFormat.relativeAge(nasHistory.collectedAt, now: now)))"
+        ]
+        if isStale { parts.insert("오래된 기록", at: 0) }
+        if let issue = store.nasHistoryIssue { parts.append("최신 확인 실패: \(issue)") }
+        return Text(parts.joined(separator: " · "))
+            .font(.caption2)
+            .foregroundStyle(isStale ? CCMBTheme.signalRed : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var nasHistoryWaitingText: String {
+        let base = "NAS에서 기록을 모으는 중입니다. 3분 간격으로 두 번 수집되면 그래프가 표시됩니다."
+        guard let issue = store.nasHistoryIssue else { return base }
+        return "\(base) (\(issue))"
+    }
+
+    private func historyColumns(
+        _ history: UsageConsumptionHistory,
+        codexUsesCredits: Bool,
+        emptyCaption: String?,
+        perSampleLabel: String
+    ) -> [ConsumptionHistoryColumn] {
         let codexSeries = codexUsesCredits
             ? [ConsumptionHistorySeries(label: "크레딧", samples: history.codex, color: .mint)]
             : [ConsumptionHistorySeries(label: "주간", samples: history.codex, color: .mint)]
@@ -203,20 +289,28 @@ struct PassionSummaryCard: View {
             ConsumptionHistorySeries(label: "세션", samples: history.gemini, color: .blue)
         ]
         return [
-            ConsumptionHistoryColumn(service: .codex, caption: caption(for: codexSeries, unit: codexUsesCredits ? " cr" : "%"), series: codexSeries),
-            ConsumptionHistoryColumn(service: .claude, caption: caption(for: claudeSeries, unit: "%"), series: claudeSeries),
-            ConsumptionHistoryColumn(service: .gemini, caption: caption(for: geminiSeries, unit: "%"), series: geminiSeries)
+            ConsumptionHistoryColumn(service: .codex, caption: caption(for: codexSeries, unit: codexUsesCredits ? " cr" : "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: codexSeries),
+            ConsumptionHistoryColumn(service: .claude, caption: caption(for: claudeSeries, unit: "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: claudeSeries),
+            ConsumptionHistoryColumn(service: .gemini, caption: caption(for: geminiSeries, unit: "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: geminiSeries)
         ]
     }
 
-    private func caption(for series: [ConsumptionHistorySeries], unit: String) -> String {
+    /// `emptyCaption` replaces the Mac menu's "0" placeholder where showing
+    /// zero would invent a reading (the NAS-recorded history).
+    private func caption(
+        for series: [ConsumptionHistorySeries],
+        unit: String,
+        emptyCaption: String? = nil,
+        perSampleLabel: String
+    ) -> String {
         let latestDate = series.flatMap(\.samples).map(\.at).max()
         let parts = series.compactMap { item -> String? in
             guard let latestDate,
                   let amount = item.samples.last(where: { $0.at == latestDate })?.amount else { return nil }
             return "\(item.label) \(amountTitle(amount))\(unit)"
         }
-        return "갱신당 " + (parts.isEmpty ? "0\(unit)" : parts.joined(separator: " · "))
+        if parts.isEmpty, let emptyCaption { return emptyCaption }
+        return "\(perSampleLabel) " + (parts.isEmpty ? "0\(unit)" : parts.joined(separator: " · "))
     }
 
     private func amountTitle(_ value: Double) -> String {
@@ -340,6 +434,11 @@ struct AutomaticRefreshCard: View {
                             )
                         }
                     }
+                    Button {
+                        store.requestNASLogin()
+                    } label: {
+                        Label("NAS", systemImage: store.preferredSource == .nas ? "checkmark.externaldrive" : "externaldrive")
+                    }
                     Divider()
                     Button(action: onPickFile) {
                         Label("Dropbox·Google Drive 파일 선택", systemImage: "folder.badge.plus")
@@ -416,6 +515,7 @@ struct AutomaticRefreshCard: View {
         switch store.preferredSource {
         case .cloud: return "iCloud"
         case .file: return store.sourceFileName ?? "선택한 파일"
+        case .nas: return "NAS"
         }
     }
 

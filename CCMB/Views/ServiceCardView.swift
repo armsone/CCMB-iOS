@@ -16,8 +16,29 @@ struct ServiceCardView: View {
         return usage.windows
     }
 
+    /// NAS 소스의 Codex는 값이 없어도("확인 불가") 토큰 칸을 고정으로 보여 준다;
+    /// Mac 소스는 기존처럼 실제 크레딧 값이 있을 때만 칸이 나타난다.
+    private var showsCodexCreditMetric: Bool {
+        guard usage.service == .codex else { return false }
+        return usage.creditBalance != nil || usage.creditUnlimited || store.displayedSource == .nas
+    }
+
+    private func displayLabel(for window: UsageWindow) -> String {
+        guard usage.service == .claude else { return window.label }
+        switch window.id {
+        case "fiveHour": return "세션"
+        case "fableWeekly": return "페블"
+        case "weekly": return "주간"
+        default: return window.label
+        }
+    }
+
+    private var codexCreditMetricLabel: String {
+        store.displayedSource == .nas ? "토큰" : "크레딧"
+    }
+
     private var columns: [GridItem] {
-        let creditColumn = usage.service == .codex && usage.creditBalance != nil ? 1 : 0
+        let creditColumn = showsCodexCreditMetric ? 1 : 0
         return Array(
             repeating: GridItem(.flexible(), spacing: 8),
             count: max(1, displayedWindows.count + creditColumn)
@@ -49,16 +70,26 @@ struct ServiceCardView: View {
                     ForEach(displayedWindows) { window in
                         CCMBRingGauge(
                             value: window.remainingPercent,
-                            label: window.label,
-                            unavailableLabel: window.unavailabilityNote,
+                            label: displayLabel(for: window),
+                            showLabel: usage.service != .codex,
+                            unavailableLabel: visibleNoteText(for: window),
                             tint: CCMBTheme.serviceTint(usage.service, windowID: window.id),
                             animationTrigger: store.lastReadAt
                         )
                     }
-                    if usage.service == .codex, let credit = usage.creditBalance {
+                    if showsCodexCreditMetric {
                         CCMBCreditMetric(
-                            value: credit,
-                            spentLast30Minutes: store.codexCreditsSpentLast30Minutes,
+                            value: usage.creditBalance,
+                            unlimited: usage.creditUnlimited,
+                            label: codexCreditMetricLabel,
+                            showLabel: codexCreditMetricLabel != "토큰",
+                            floorDisplay: store.displayedSource == .nas,
+                            // NAS never reports credit spend history; if the
+                            // displayed snapshot is NAS data (even while
+                            // `preferredSource` has since moved on, e.g. a
+                            // failed iCloud switch), this must not show a
+                            // stale Mac-sourced spend figure.
+                            spentLast30Minutes: store.displayedSource == .nas ? nil : store.codexCreditsSpentLast30Minutes,
                             tint: tint
                         )
                     }
@@ -123,6 +154,54 @@ struct ServiceCardView: View {
             .foregroundStyle(.secondary)
     }
 
+    /// Online Gemini windows (Mac-collected, NAS-stored) show their own
+    /// collection time here instead of the generic "미제공"/empty note, so a
+    /// fresh CLI reading can never make an actually-old online reading look
+    /// current, and a missing relay file stays visibly distinct from a
+    /// genuine value.
+    private func noteText(for window: UsageWindow) -> String? {
+        guard window.id.hasPrefix("online"), let fetchedAt = window.fetchedAt else {
+            // No reading has ever landed for this window, so the small
+            // actionable relay-fetch issue (if any) is the more useful
+            // thing to show than the generic waiting placeholder. Once a
+            // reading does exist, the branch below always takes over and
+            // this issue label never hides it.
+            if window.id.hasPrefix("online"), let issue = store.geminiOnlineIssue {
+                return issue
+            }
+            return window.unavailabilityNote
+        }
+        let age = CCMBFormat.relativeAge(fetchedAt)
+        let isStale = Date().timeIntervalSince(fetchedAt) > UsageSnapshot.staleAfterSeconds
+        // The relayed reading only ever actually lives on the NAS when this
+        // card is itself showing NAS-sourced data; a Mac-sourced online
+        // window must never claim "NAS 저장" for what is really its own
+        // freshly-collected value.
+        if store.displayedSource == .nas, let issue = store.geminiOnlineIssue {
+            return "마지막 저장값 · \(issue) · Mac 수집 \(age)"
+        }
+        if isStale {
+            return "오래된 값 · Mac 수집 \(age)"
+        }
+        return store.displayedSource == .nas ? "온라인 · Mac 수집 \(age) · NAS 저장" : "온라인 · Mac 수집 \(age)"
+    }
+
+    /// Same as `noteText`, but drops the plain collection/origin annotation
+    /// under the ONLINE gauges on the card itself (both the fresh "온라인 ·
+    /// Mac 수집 ... NAS 저장" line and the stale "오래된 값" variant); VoiceOver
+    /// and detail screens still get the full `noteText` with its timestamp,
+    /// and a genuine relay-fetch issue still surfaces here.
+    private func visibleNoteText(for window: UsageWindow) -> String? {
+        guard window.id.hasPrefix("online"), window.fetchedAt != nil else {
+            return noteText(for: window)
+        }
+        let full = noteText(for: window)
+        if full?.hasPrefix("마지막 저장값") == true {
+            return full
+        }
+        return nil
+    }
+
     private func refreshStatus(now: Date) -> String {
         let remaining = max(0, store.nextAutomaticRefreshAt?.timeIntervalSince(now) ?? 0)
         return "\(CCMBFormat.relativeAge(usage.fetchedAt, now: now)) · 다음 갱신 \(Int(ceil(remaining)))초"
@@ -131,13 +210,23 @@ struct ServiceCardView: View {
     private var accessibilitySummary: String {
         var parts = [usage.service.displayName]
         for window in displayedWindows {
-            if let note = window.unavailabilityNote {
-                parts.append("\(window.label) \(note)")
-            } else if window.remainingPercent != nil {
-                parts.append("\(window.label) 남음 \(CCMBFormat.percent(window.remainingPercent))")
+            if window.remainingPercent != nil {
+                var entry = "\(displayLabel(for: window)) 남음 \(CCMBFormat.percent(window.remainingPercent))"
+                if let note = noteText(for: window) { entry += ", \(note)" }
+                parts.append(entry)
+            } else if let note = window.unavailabilityNote {
+                parts.append("\(displayLabel(for: window)) \(note)")
             }
         }
-        if let credit = usage.creditBalance {
+        if showsCodexCreditMetric {
+            if usage.creditUnlimited {
+                parts.append("\(codexCreditMetricLabel) 무제한")
+            } else if let credit = usage.creditBalance {
+                parts.append("\(codexCreditMetricLabel) \(CCMBFormat.credits(credit))")
+            } else {
+                parts.append("\(codexCreditMetricLabel) 확인 불가")
+            }
+        } else if let credit = usage.creditBalance {
             parts.append("크레딧 \(CCMBFormat.credits(credit))")
         }
         parts.append("가져온 시각 \(CCMBFormat.relativeAge(usage.fetchedAt))")
@@ -146,7 +235,13 @@ struct ServiceCardView: View {
 }
 
 struct CCMBCreditMetric: View {
-    let value: Double
+    let value: Double?
+    var unlimited: Bool = false
+    var label: String = "크레딧"
+    var showLabel: Bool = true
+    /// NAS의 '토큰' 표기는 NAS 프런트엔드처럼 내림(floor) 정수로 보여 준다;
+    /// Mac의 크레딧 값은 기존 반올림 표기를 그대로 유지한다.
+    var floorDisplay: Bool = false
     let spentLast30Minutes: Double?
     let tint: Color
 
@@ -159,31 +254,46 @@ struct CCMBCreditMetric: View {
                     Image(systemName: "creditcard.fill")
                         .font(.caption2)
                         .foregroundStyle(tint)
-                    Text(CCMBFormat.credits(value))
+                    Text(valueText)
                         .font(.system(.caption2, design: .rounded).weight(.bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                         .padding(.horizontal, 4)
                         .monospacedDigit()
-                    Text(spendText)
-                        .font(.system(size: 8, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.65)
-                        .padding(.horizontal, 3)
+                    if let spendText {
+                        Text(spendText)
+                            .font(.system(size: 8, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                            .padding(.horizontal, 3)
+                    }
                 }
             }
             .frame(width: 64, height: 64)
 
-            Text("크레딧")
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
+            if showLabel {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private var spendText: String {
-        guard let spentLast30Minutes else { return "30분 집계 중" }
+    private var valueText: String {
+        if unlimited { return "무제한" }
+        guard let value else { return "확인 불가" }
+        guard floorDisplay else { return CCMBFormat.credits(value) }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: floor(value))) ?? CCMBFormat.credits(value)
+    }
+
+    private var spendText: String? {
+        guard let spentLast30Minutes else { return nil }
         return "30분 -\(CCMBFormat.credits(spentLast30Minutes))"
     }
 }
@@ -191,6 +301,7 @@ struct CCMBCreditMetric: View {
 struct CCMBRingGauge: View {
     let value: Double?
     let label: String
+    var showLabel: Bool = true
     let unavailableLabel: String?
     let tint: Color
     let animationTrigger: Date?
@@ -238,11 +349,13 @@ struct CCMBRingGauge: View {
             .frame(width: 64, height: 64)
 
             VStack(spacing: 1) {
-                Text(label)
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if value == nil, let unavailableLabel {
+                if showLabel {
+                    Text(label)
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                if let unavailableLabel {
                     Text(unavailableLabel)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)

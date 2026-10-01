@@ -1,0 +1,13 @@
+--- a/server-app.mjs
++++ b/server-app.mjs
+@@ -4719,6 +4719,10 @@
+   reconcileGeneratedIndex();
+   cleanupExpiredGeneratedImages();
+   setInterval(cleanupExpiredGeneratedImages, GENERATED_IMAGE_CLEANUP_MS).unref();
++  // CCMB "나의 AI 열정": Mac 없이 기존 getUsage() 결과로 3분마다 소비 기록을 남긴다. 모듈이 없거나 실패해도 서버는 그대로 뜬다.
++  import('./ccmb-usage-history.mjs')
++    .then(({ startCcmbUsageHistory }) => startCcmbUsageHistory({ getUsage, dataDir: DATA_DIR }))
++    .catch((e) => console.error(`[ccmb-history] 시작 실패 (${e.code || e.name}); 다른 기능에는 영향이 없습니다`));
+   const server = http.createServer((req, res) => {
+     handle(req, res).catch((e) => {
+       const status = Number.isInteger(e.status) ? e.status : 500;

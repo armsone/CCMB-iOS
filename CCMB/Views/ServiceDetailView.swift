@@ -5,6 +5,12 @@ import SwiftUI
 /// disappearing, so the screen shape stays predictable.
 struct ServiceDetailView: View {
     let usage: ServiceUsage
+    /// Whether this snapshot came from the home NAS rather than the Mac's
+    /// iCloud/file snapshot; changes the Codex credit section's label and the
+    /// footer's source explanation.
+    var isNAS: Bool = false
+
+    private var isNASToken: Bool { isNAS && usage.service == .codex }
 
     var body: some View {
         List {
@@ -25,16 +31,27 @@ struct ServiceDetailView: View {
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            if let note = onlineCollectionNote(for: window) {
+                                Text(note)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .accessibilityElement(children: .combine)
                     }
                 }
             }
 
-            if usage.creditBalance != nil || usage.monthlyUsedCredits != nil {
-                Section("크레딧") {
-                    if let label = usage.creditLabel {
-                        LabeledContent(label, value: CCMBFormat.credits(usage.creditBalance))
+            if usage.creditBalance != nil || usage.monthlyUsedCredits != nil || usage.creditUnlimited || isNASToken {
+                Section(isNASToken ? "토큰" : "크레딧") {
+                    if let label = usage.creditLabel ?? (isNASToken ? "남은 토큰" : nil) {
+                        if usage.creditUnlimited {
+                            LabeledContent(label, value: "무제한")
+                        } else if usage.creditBalance != nil {
+                            LabeledContent(label, value: CCMBFormat.credits(usage.creditBalance))
+                        } else if isNASToken {
+                            LabeledContent(label, value: "확인 불가")
+                        }
                     }
                     if usage.monthlyUsedCredits != nil {
                         LabeledContent("이번 달 사용 크레딧", value: CCMBFormat.credits(usage.monthlyUsedCredits))
@@ -80,13 +97,38 @@ struct ServiceDetailView: View {
                 if let status = usage.status {
                     LabeledContent("상태", value: statusDescription(status))
                 }
-                Text("이 값은 Mac의 CCMB가 기록한 스냅샷(iCloud 또는 파일)에서 읽은 것입니다. iPhone에서 직접 조회한 값이 아닙니다.")
+                Text(sourceExplanation)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if usage.service == .gemini, isNAS {
+                    Text("O세션/O주간은 Mac이 Gemini 웹(gemini.google.com)에서 직접 수집해 NAS의 저장 공간에 보관한 값입니다. 나머지(C세션/C주간)는 NAS가 Gemini CLI에서 직접 조회한 값입니다. 두 값은 수집 시각이 다를 수 있습니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .navigationTitle(usage.service.displayName)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var sourceExplanation: String {
+        guard isNAS else {
+            return "이 값은 Mac의 CCMB가 기록한 스냅샷(iCloud 또는 파일)에서 읽은 것입니다. iPhone에서 직접 조회한 값이 아닙니다."
+        }
+        let base = "이 값은 NAS에서 직접 조회한 실시간 사용량입니다."
+        guard isNASToken else { return base }
+        return base + " 토큰 잔액은 플레이그라운드가 보고하는 잔액이며, 입력/출력 토큰 소비량이 아닙니다."
+    }
+
+    /// Gemini's online windows are Mac-collected (via the Gemini web
+    /// session) and relayed through NAS storage, a different path and time
+    /// than the surrounding Gemini CLI/NAS reading — this must stay visible
+    /// even when the CLI data on screen is fresh.
+    private func onlineCollectionNote(for window: UsageWindow) -> String? {
+        guard window.id.hasPrefix("online"), let fetchedAt = window.fetchedAt else { return nil }
+        let isStale = Date().timeIntervalSince(fetchedAt) > UsageSnapshot.staleAfterSeconds
+        let prefix = isStale ? "오래된 값" : "온라인"
+        return "\(prefix) · Mac 수집 \(CCMBFormat.resetTime(fetchedAt)) · NAS 저장"
     }
 
     private var detailWindows: [UsageWindow] {

@@ -45,6 +45,9 @@ struct RootView: View {
                         store.importPicked(url: url)
                     }
                 }
+                .sheet(isPresented: $store.isNASLoginPresented) {
+                    NASLoginSheetView()
+                }
         }
     }
 
@@ -77,6 +80,7 @@ struct RootView: View {
 /// Load failure with no earlier snapshot to fall back to. The action comes
 /// first; the technical cause is already folded into the message.
 struct FailureView: View {
+    @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
     let message: String
     let onLoadFromCloud: () -> Void
@@ -98,6 +102,25 @@ struct FailureView: View {
             Button("다른 방법: Dropbox·Google Drive 파일 선택") { onPickFile() }
                 .buttonStyle(.bordered)
                 .tint(CCMBTheme.charcoal)
+            Button {
+                store.requestNASLogin()
+            } label: {
+                if store.nasConnecting {
+                    ProgressView()
+                } else {
+                    Text("다른 방법: NAS에서 불러오기")
+                }
+            }
+            .buttonStyle(.bordered)
+            .tint(CCMBTheme.charcoal)
+            .disabled(store.nasConnecting)
+            if let nasError = store.nasConnectError {
+                Text(nasError)
+                    .font(.footnote)
+                    .foregroundStyle(CCMBTheme.signalRed)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(appearanceStore.selection.background)

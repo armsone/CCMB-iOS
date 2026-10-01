@@ -84,8 +84,31 @@ struct WelcomeView: View {
                         .font(.subheadline)
                 }
                 .tint(CCMBTheme.charcoal)
-                .padding(.bottom, 24)
                 .accessibilityHint("Mac CCMB가 클라우드 폴더에 자동 저장한 CCMB-usage-v1.json을 파일 앱에서 선택합니다.")
+
+                Button {
+                    store.requestNASLogin()
+                } label: {
+                    if store.nasConnecting {
+                        ProgressView()
+                    } else {
+                        Text("다른 방법: NAS에서 불러오기")
+                            .font(.subheadline)
+                    }
+                }
+                .tint(CCMBTheme.charcoal)
+                .disabled(store.nasConnecting)
+                .padding(.bottom, 24)
+                .accessibilityHint("NAS 웹사이트에 로그인한 뒤 남은 사용량을 읽습니다.")
+
+                if let nasError = store.nasConnectError {
+                    Text(nasError)
+                        .font(.footnote)
+                        .foregroundStyle(CCMBTheme.signalRed)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 12)
+                }
             }
         }
         .background(appearanceStore.selection.background)

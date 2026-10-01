@@ -26,13 +26,34 @@ private struct JSONObject {
     let raw: [String: Any]
 
     func double(_ key: String) -> Double? { (raw[key] as? NSNumber)?.doubleValue }
+    /// A percentage field is only ever a real reading when it is finite and
+    /// within `0...100`; anything else (NaN, infinity, a server-side glitch
+    /// like a negative or >100 value) must never be shown as a true
+    /// remaining amount.
+    func percent(_ key: String) -> Double? {
+        guard let value = double(key), value.isFinite, (0...100).contains(value) else { return nil }
+        return value
+    }
     func int(_ key: String) -> Int? { (raw[key] as? NSNumber)?.intValue }
+    /// Like `int(_:)` but rejects a genuine CFBoolean (`true`/`false`),
+    /// which bridges to NSNumber and would otherwise satisfy `== 1` for
+    /// `true`; a real integer `1` must still pass.
+    func nonBoolInt(_ key: String) -> Int? {
+        guard let number = raw[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.intValue
+    }
     func string(_ key: String) -> String? { raw[key] as? String }
     func bool(_ key: String) -> Bool? { raw[key] as? Bool }
     func date(_ key: String) -> Date? { string(key).flatMap(Self.parseDate) }
     func object(_ key: String) -> JSONObject? { (raw[key] as? [String: Any]).map(JSONObject.init) }
     func objectArray(_ key: String) -> [JSONObject] {
         (raw[key] as? [[String: Any]])?.map(JSONObject.init) ?? []
+    }
+
+    /// The NAS usage endpoint reports timestamps as epoch seconds rather than
+    /// the Mac app's ISO 8601 strings.
+    func epochSecondsDate(_ key: String) -> Date? {
+        (raw[key] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
     }
 
     /// The Mac app writes fractional-second ISO 8601, but nested reset
@@ -82,6 +103,12 @@ struct UsageWindow: Identifiable {
     /// caption rather than a machine-readable timestamp.
     var resetText: String? = nil
     var unavailabilityNote: String? = nil
+    /// Only set when this window's reading was collected at a different time
+    /// (and by a different path) than the surrounding service's own
+    /// `fetchedAt` — currently just the Gemini NAS-stored online relay
+    /// windows, whose detail screen and card footer must show the Mac's
+    /// actual collection time rather than the NAS report time.
+    var fetchedAt: Date? = nil
 }
 
 struct ClaudeModelWeeklyLimit: Identifiable {
@@ -100,8 +127,12 @@ struct ServiceUsage {
     let status: String?
     let windows: [UsageWindow]
     /// 달러 등 숫자 크레딧 잔액 (Codex 크레딧, Gemini AI 크레딧, Grok 추가 크레딧).
+    /// NAS 소스의 Codex는 이 필드에 플레이그라운드가 보고하는 '토큰' 잔액을 담는다
+    /// (입력/출력 토큰 소비량이 아니다).
     let creditBalance: Double?
     let creditLabel: String?
+    /// NAS의 Codex credits.unlimited. Mac 소스나 다른 서비스는 항상 false.
+    var creditUnlimited: Bool = false
     /// Grok의 이번 달 사용 크레딧.
     let monthlyUsedCredits: Double?
     let account: String?
@@ -127,7 +158,7 @@ struct ServiceUsage {
     }
 
     var hasAnyData: Bool {
-        windows.contains { $0.remainingPercent != nil } || creditBalance != nil || monthlyUsedCredits != nil
+        windows.contains { $0.remainingPercent != nil } || creditBalance != nil || monthlyUsedCredits != nil || creditUnlimited
     }
 }
 
@@ -155,6 +186,11 @@ struct UsageSnapshot {
     let macAppVersion: String?
     let services: [Service: ServiceUsage]
     let consumptionHistory: UsageConsumptionHistory?
+    /// Only ever set on NAS snapshots: the consumption history the NAS
+    /// samples on its own every 5 minutes. Kept apart from
+    /// `consumptionHistory` because its age and Codex unit come from the
+    /// NAS history file, not from this usage report.
+    var nasHistory: NASConsumptionHistory? = nil
 
     /// Newest per-service fetch time, used for the "데이터 기준" header and
     /// the stale banner.
@@ -245,7 +281,7 @@ struct UsageSnapshot {
             throw SnapshotError.notJSON
         }
         let root = JSONObject(raw: dictionary)
-        guard root.int("schemaVersion") == 1 else {
+        guard root.nonBoolInt("schemaVersion") == 1 else {
             throw SnapshotError.unsupportedSchema
         }
 
@@ -471,5 +507,517 @@ struct UsageSnapshot {
             modelWeeklyLimits: [],
             fetchedAt: grok?.date("fetchedAt")
         )
+    }
+}
+
+/// Parses the home NAS's `/api/usage` response, a different wire shape from
+/// the Mac's `usage-v1.json`: `{ok, report:{services:[...]}, fetchedAt,
+/// cached, error}` where each service carries its own `items` array of named
+/// quota windows. The Codex weekly item may additionally carry a nested
+/// `credits: {balance, unlimited}` — the same balance the NAS frontend itself
+/// labels '토큰' (a playground balance, not input/output token consumption).
+/// The NAS reports no Grok here, and its consumption history arrives only via
+/// the separate NAS history file (`applyingNASHistory`) — neither is guessed
+/// or carried over from another source.
+extension UsageSnapshot {
+    static func parseNAS(_ data: Data) throws -> UsageSnapshot {
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw SnapshotError.notJSON
+        }
+        guard let dictionary = object as? [String: Any] else {
+            throw SnapshotError.notJSON
+        }
+        let root = JSONObject(raw: dictionary)
+        guard let report = root.object("report") else {
+            throw SnapshotError.unsupportedSchema
+        }
+        let serviceObjects = report.objectArray("services")
+        func service(named name: String) -> JSONObject? {
+            serviceObjects.first { $0.string("service") == name }
+        }
+
+        var services: [Service: ServiceUsage] = [:]
+        services[.codex] = parseNASCodex(service(named: "codex"))
+        services[.claude] = parseNASClaude(service(named: "claude"))
+        services[.gemini] = parseNASGemini(service(named: "gemini"))
+        services[.grok] = parseNASUnavailable(.grok)
+
+        // A payload with no measured window and no usable credits/token
+        // reading anywhere (every service empty, erroring, or otherwise
+        // unusable) is not a readable report at all, even though the JSON
+        // itself parsed fine.
+        guard services.values.contains(where: {
+            !$0.measuredWindows.isEmpty || $0.creditBalance != nil || $0.creditUnlimited
+        }) else {
+            throw SnapshotError.unsupportedSchema
+        }
+
+        return UsageSnapshot(
+            // The top-level `fetchedAt` is only the NAS's request time, not
+            // when any service was actually collected; using it here would
+            // let a stale per-service reading masquerade as fresh. Staleness
+            // is instead computed purely from each service's own
+            // `fetched_at` via `newestFetchedAt`.
+            fetchedAt: nil,
+            publishedAt: nil,
+            macAppVersion: nil,
+            services: services,
+            consumptionHistory: nil
+        )
+    }
+
+    private static func nasItems(_ service: JSONObject?) -> [JSONObject] {
+        service?.objectArray("items") ?? []
+    }
+
+    private static func nasStatus(_ service: JSONObject?) -> String? {
+        guard let service else { return nil }
+        if service.string("error") != nil { return "unavailable" }
+        if service.bool("stale") == true { return "stale" }
+        if service.bool("ok") == true { return "ok" }
+        return "unavailable"
+    }
+
+    private static func parseNASUnavailable(_ service: Service) -> ServiceUsage {
+        ServiceUsage(
+            service: service,
+            status: nil,
+            windows: [],
+            creditBalance: nil,
+            creditLabel: nil,
+            monthlyUsedCredits: nil,
+            account: nil,
+            organizationName: nil,
+            planTitle: nil,
+            model: nil,
+            modelWeeklyLimits: [],
+            fetchedAt: nil
+        )
+    }
+
+    /// The NAS exposes a `gpt-reserve` pool alongside the real weekly quota;
+    /// only the item literally named `codex` is the one shown elsewhere as
+    /// Codex's weekly limit. `gpt-reserve`'s own credits must never leak into
+    /// this card.
+    private static func parseNASCodex(_ service: JSONObject?) -> ServiceUsage {
+        let weekly = nasItems(service).first { $0.string("name") == "codex" && $0.string("window") == "weekly" }
+        let windows: [UsageWindow] = [
+            UsageWindow(
+                id: "session",
+                label: "세션",
+                remainingPercent: nil,
+                resetsAt: nil,
+                unavailabilityNote: "NAS 데이터에서 제공되지 않음"
+            ),
+            UsageWindow(
+                id: "weekly",
+                label: "주간",
+                remainingPercent: weekly?.percent("remaining_percent"),
+                resetsAt: weekly?.epochSecondsDate("resets_at"),
+                unavailabilityNote: weekly == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            )
+        ]
+        // Credits are only trusted when the service itself is usable (a live
+        // or stale-but-cached reading); an erroring/unavailable service must
+        // never surface a stray numeric balance.
+        let usable = service?.bool("ok") == true || service?.bool("stale") == true
+        let credits = usable ? weekly?.object("credits") : nil
+        let rawBalance = credits?.double("balance")
+        let balance = rawBalance.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        return ServiceUsage(
+            service: .codex,
+            status: nasStatus(service),
+            windows: windows,
+            creditBalance: balance,
+            creditLabel: usable ? "토큰" : nil,
+            creditUnlimited: credits?.bool("unlimited") ?? false,
+            monthlyUsedCredits: nil,
+            account: nil,
+            organizationName: nil,
+            planTitle: nil,
+            model: nil,
+            modelWeeklyLimits: [],
+            fetchedAt: service?.epochSecondsDate("fetched_at")
+        )
+    }
+
+    /// Card order matches the Mac-sourced parse: 5시간 세션 → Fable 주간 →
+    /// 전체 주간.
+    private static func parseNASClaude(_ service: JSONObject?) -> ServiceUsage {
+        let items = nasItems(service)
+        // Matched by exact name ('전체') rather than "first weekly item that
+        // isn't Fable", since additional per-model pools (e.g. Opus, Sonnet)
+        // could otherwise be mistaken for the overall limit.
+        let fiveHour = items.first { $0.string("window") == "session" && $0.string("name") == "전체" }
+        let fableItem = items.first {
+            $0.string("window") == "weekly" && ($0.string("name")?.localizedCaseInsensitiveContains("fable") ?? false)
+        }
+        let weekly = items.first {
+            $0.string("window") == "weekly" && $0.string("name") == "전체"
+        }
+        let modelWeeklyLimits: [ClaudeModelWeeklyLimit] = fableItem.map {
+            [ClaudeModelWeeklyLimit(
+                id: "fable",
+                modelName: "Fable",
+                remainingPercent: $0.percent("remaining_percent"),
+                resetsAt: $0.epochSecondsDate("resets_at")
+            )]
+        } ?? []
+        let windows: [UsageWindow] = [
+            UsageWindow(
+                id: "fiveHour",
+                label: "5시간 세션",
+                remainingPercent: fiveHour?.percent("remaining_percent"),
+                resetsAt: fiveHour?.epochSecondsDate("resets_at"),
+                unavailabilityNote: fiveHour == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            ),
+            UsageWindow(
+                id: "fableWeekly",
+                label: "Fable 주간",
+                remainingPercent: fableItem?.percent("remaining_percent"),
+                resetsAt: fableItem?.epochSecondsDate("resets_at"),
+                unavailabilityNote: fableItem == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            ),
+            UsageWindow(
+                id: "weekly",
+                label: "전체 주간",
+                remainingPercent: weekly?.percent("remaining_percent"),
+                resetsAt: weekly?.epochSecondsDate("resets_at"),
+                unavailabilityNote: weekly == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            )
+        ]
+        return ServiceUsage(
+            service: .claude,
+            status: nasStatus(service),
+            windows: windows,
+            creditBalance: nil,
+            creditLabel: nil,
+            monthlyUsedCredits: nil,
+            account: nil,
+            organizationName: nil,
+            planTitle: nil,
+            model: nil,
+            modelWeeklyLimits: modelWeeklyLimits,
+            fetchedAt: service?.epochSecondsDate("fetched_at")
+        )
+    }
+
+    /// Only the "Gemini Models" pool is shown; the NAS's "Claude and GPT
+    /// models" pool under the same service belongs to a different quota and
+    /// must never be mislabeled as Gemini's own limit. The NAS quota API
+    /// itself has no authenticated-web ("online") reading — that only
+    /// arrives later via `applyingGeminiOnline`, once the Mac-side relay has
+    /// actually saved one — so these two placeholder windows start out
+    /// waiting rather than claiming the data does not exist at all.
+    private static func parseNASGemini(_ service: JSONObject?) -> ServiceUsage {
+        let items = nasItems(service)
+        let fiveHour = items.first {
+            ($0.string("name") ?? "").hasPrefix("Gemini Models") && $0.string("window") == "session"
+        }
+        let weekly = items.first {
+            ($0.string("name") ?? "").hasPrefix("Gemini Models") && $0.string("window") == "weekly"
+        }
+        let windows: [UsageWindow] = [
+            UsageWindow(
+                id: "cliFiveHour",
+                label: "세션",
+                remainingPercent: fiveHour?.percent("remaining_percent"),
+                resetsAt: fiveHour?.epochSecondsDate("resets_at"),
+                unavailabilityNote: fiveHour == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            ),
+            UsageWindow(
+                id: "cliWeekly",
+                label: "주간",
+                remainingPercent: weekly?.percent("remaining_percent"),
+                resetsAt: weekly?.epochSecondsDate("resets_at"),
+                unavailabilityNote: weekly == nil ? "NAS 데이터에서 제공되지 않음" : nil
+            ),
+            UsageWindow(
+                id: "onlineFiveHour",
+                label: "O세션",
+                remainingPercent: nil,
+                resetsAt: nil,
+                unavailabilityNote: "Mac에서 NAS 저장 대기"
+            ),
+            UsageWindow(
+                id: "onlineWeekly",
+                label: "O주간",
+                remainingPercent: nil,
+                resetsAt: nil,
+                unavailabilityNote: "Mac에서 NAS 저장 대기"
+            )
+        ]
+        return ServiceUsage(
+            service: .gemini,
+            status: nasStatus(service),
+            windows: windows,
+            creditBalance: nil,
+            creditLabel: nil,
+            monthlyUsedCredits: nil,
+            account: nil,
+            organizationName: nil,
+            planTitle: nil,
+            model: nil,
+            modelWeeklyLimits: [],
+            fetchedAt: service?.epochSecondsDate("fetched_at")
+        )
+    }
+}
+
+/// One validated reading from the private NAS-stored
+/// `CCMB-gemini-online-v1.json` relay file: the Mac's own
+/// `gemini.online.{fiveHour,weekly}` web-session reading, relayed through the
+/// user's existing private NAS storage project rather than read from the NAS
+/// quota API (which has no online reading of its own).
+struct GeminiOnlineReading: Equatable {
+    let fiveHourRemainingPercent: Double?
+    let weeklyRemainingPercent: Double?
+    let fiveHourResetText: String?
+    let weeklyResetText: String?
+    let fetchedAt: Date
+}
+
+extension UsageSnapshot {
+    /// Validates the bounded relay contract: `schemaVersion` 1,
+    /// `gemini.online` only, each percentage finite/`0...100`/not-a-boolean,
+    /// a real timestamp no more than 5 minutes in the future, and reset
+    /// captions trimmed/stripped of control characters and capped at 160
+    /// characters. Anything else — wrong shape, an implausible or missing
+    /// timestamp, an oversized payload, no usable percentage at all — is
+    /// simply absent data, never a guess.
+    static func parseGeminiOnlineRelay(_ data: Data, now: Date = Date()) -> GeminiOnlineReading? {
+        guard data.count <= 8192 else { return nil }
+        guard let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let root = JSONObject(raw: dictionary)
+        guard root.nonBoolInt("schemaVersion") == 1 else { return nil }
+        guard let gemini = root.object("gemini"), let online = gemini.object("online") else { return nil }
+        guard let fetchedAt = online.date("fetchedAt"), fetchedAt <= now.addingTimeInterval(5 * 60) else {
+            return nil
+        }
+
+        // `NSNumber as? Bool` in Swift succeeds for *any* NSNumber whose
+        // value is 0 or 1, not only an actual JSON `true`/`false` — so a
+        // genuine 0% or 1% reading must not be screened out that way.
+        // CFGetTypeID distinguishes a real CFBoolean from a numeric 0/1.
+        func percent(_ key: String) -> Double? {
+            guard let raw = online.raw[key] else { return nil }
+            guard let number = raw as? NSNumber else { return nil }
+            guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            let value = number.doubleValue
+            guard value.isFinite, (0...100).contains(value) else { return nil }
+            return value
+        }
+        func resetText(_ key: String) -> String? {
+            guard let string = online.string(key) else { return nil }
+            let stripped = String(string.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : String(trimmed.prefix(160))
+        }
+
+        let fiveHour = percent("fiveHourRemainingPercent")
+        let weekly = percent("weeklyRemainingPercent")
+        guard fiveHour != nil || weekly != nil else { return nil }
+
+        return GeminiOnlineReading(
+            fiveHourRemainingPercent: fiveHour,
+            weeklyRemainingPercent: weekly,
+            fiveHourResetText: resetText("fiveHourResetText"),
+            weeklyResetText: resetText("weeklyResetText"),
+            fetchedAt: fetchedAt
+        )
+    }
+
+    /// Fills the Gemini `onlineFiveHour`/`onlineWeekly` windows from a
+    /// validated relay reading, independent of whichever source (NAS quota
+    /// API or Mac snapshot) produced the rest of this snapshot. A window the
+    /// reading did not carry a value for is left exactly as the base
+    /// snapshot had it (typically "NAS 데이터에서 제공되지 않음"), never
+    /// zeroed or guessed.
+    func applyingGeminiOnline(_ reading: GeminiOnlineReading) -> UsageSnapshot {
+        guard let gemini = services[.gemini] else { return self }
+        let windows = gemini.windows.map { window -> UsageWindow in
+            switch window.id {
+            case "onlineFiveHour":
+                guard let percent = reading.fiveHourRemainingPercent else { return window }
+                return UsageWindow(
+                    id: window.id,
+                    label: window.label,
+                    remainingPercent: percent,
+                    resetsAt: nil,
+                    resetText: reading.fiveHourResetText,
+                    unavailabilityNote: nil,
+                    fetchedAt: reading.fetchedAt
+                )
+            case "onlineWeekly":
+                guard let percent = reading.weeklyRemainingPercent else { return window }
+                return UsageWindow(
+                    id: window.id,
+                    label: window.label,
+                    remainingPercent: percent,
+                    resetsAt: nil,
+                    resetText: reading.weeklyResetText,
+                    unavailabilityNote: nil,
+                    fetchedAt: reading.fetchedAt
+                )
+            default:
+                return window
+            }
+        }
+        let newGemini = ServiceUsage(
+            service: gemini.service,
+            status: gemini.status,
+            windows: windows,
+            creditBalance: gemini.creditBalance,
+            creditLabel: gemini.creditLabel,
+            creditUnlimited: gemini.creditUnlimited,
+            monthlyUsedCredits: gemini.monthlyUsedCredits,
+            account: gemini.account,
+            organizationName: gemini.organizationName,
+            planTitle: gemini.planTitle,
+            model: gemini.model,
+            modelWeeklyLimits: gemini.modelWeeklyLimits,
+            fetchedAt: gemini.fetchedAt
+        )
+        var services = services
+        services[.gemini] = newGemini
+        return UsageSnapshot(
+            fetchedAt: fetchedAt,
+            publishedAt: publishedAt,
+            macAppVersion: macAppVersion,
+            services: services,
+            consumptionHistory: consumptionHistory,
+            nasHistory: nasHistory
+        )
+    }
+}
+
+/// One validated copy of the private NAS-stored
+/// `CCMB-nas-consumption-history-v1.json` file: consumption the NAS itself
+/// samples every 5 minutes from its own usage collector, with no Mac
+/// involved. Each sample is the drop in a real reading since the previous
+/// real reading; a service that failed or was stale simply has no sample.
+struct NASConsumptionHistory {
+    /// Codex weekly-percent consumption and Codex credit consumption are
+    /// separate series so the two units can never mix; `codexUsesCredits`
+    /// says which one the NAS is currently measuring.
+    let codex: [UsageConsumptionPoint]
+    let codexCredits: [UsageConsumptionPoint]
+    let claude: [UsageConsumptionPoint]
+    let claudeFable: [UsageConsumptionPoint]
+    let gemini: [UsageConsumptionPoint]
+    let codexUsesCredits: Bool
+    /// When the NAS last accepted a fresh reading — never the download time.
+    let collectedAt: Date
+
+    var history: UsageConsumptionHistory {
+        UsageConsumptionHistory(
+            slotCount: UsageSnapshot.nasHistoryMaxSamples,
+            codex: codexUsesCredits ? codexCredits : codex,
+            codexSpark: [],
+            claude: claude,
+            claudeFable: claudeFable,
+            gemini: gemini
+        )
+    }
+
+    /// True until the NAS has a second fresh reading to compare against its
+    /// first (baseline) one.
+    var isEmpty: Bool {
+        codex.isEmpty && codexCredits.isEmpty && claude.isEmpty && claudeFable.isEmpty && gemini.isEmpty
+    }
+}
+
+extension UsageSnapshot {
+    static let nasHistoryMaxBytes = 32768
+    static let nasHistoryMaxSamples = 40
+    static let nasHistoryIntervalSeconds = 180
+    static let nasHistorySeriesKeys = ["codex", "codexCredits", "claude", "claudeFable", "gemini"]
+
+    static func parseNASConsumptionHistoryFile(_ data: Data, now: Date = Date()) -> NASConsumptionHistory? {
+        guard data.count <= nasHistoryMaxBytes,
+              let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return parseNASConsumptionHistory(dictionary, now: now)
+    }
+
+    /// Validates the NAS history contract exactly: only the known root keys,
+    /// `schemaVersion` 1, `source` "nas", `intervalSeconds` 180, `slotCount`
+    /// 40 (none of them booleans), timezone-qualified timestamps no more than
+    /// 5 minutes in the future, `codexUnit` `percent`/`credits`, all five
+    /// series present with at most 40 `{at, amount}` samples each in strictly
+    /// increasing time order, and every amount a finite, non-negative,
+    /// non-boolean number. Anything else — including the older Mac-relayed
+    /// history shape — rejects the whole file, never a partial guess.
+    static func parseNASConsumptionHistory(_ dictionary: [String: Any], now: Date = Date()) -> NASConsumptionHistory? {
+        let rootKeys: Set<String> = [
+            "schemaVersion", "source", "intervalSeconds", "slotCount", "collectedAt", "codexUnit", "consumptionHistory"
+        ]
+        guard Set(dictionary.keys) == rootKeys else { return nil }
+        let root = JSONObject(raw: dictionary)
+        guard root.nonBoolInt("schemaVersion") == 1,
+              dictionary["source"] as? String == "nas",
+              exactInteger(dictionary["intervalSeconds"]) == nasHistoryIntervalSeconds,
+              exactInteger(dictionary["slotCount"]) == nasHistoryMaxSamples else { return nil }
+
+        let latestAllowed = now.addingTimeInterval(5 * 60)
+        func timestamp(_ value: Any?) -> Date? {
+            guard let string = value as? String, !string.isEmpty, string.count <= 64,
+                  let date = JSONObject.parseDate(string), date <= latestAllowed else { return nil }
+            return date
+        }
+
+        guard let collectedAt = timestamp(dictionary["collectedAt"]) else { return nil }
+        let codexUsesCredits: Bool
+        switch dictionary["codexUnit"] as? String {
+        case "percent": codexUsesCredits = false
+        case "credits": codexUsesCredits = true
+        default: return nil
+        }
+
+        guard let history = dictionary["consumptionHistory"] as? [String: Any],
+              Set(history.keys) == Set(nasHistorySeriesKeys) else { return nil }
+
+        var series: [String: [UsageConsumptionPoint]] = [:]
+        for key in nasHistorySeriesKeys {
+            guard let items = history[key] as? [Any], items.count <= nasHistoryMaxSamples else { return nil }
+            var points: [UsageConsumptionPoint] = []
+            for item in items {
+                guard let sample = item as? [String: Any],
+                      Set(sample.keys) == ["at", "amount"],
+                      let at = timestamp(sample["at"]),
+                      let number = sample["amount"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.isFinite, number.doubleValue >= 0 else { return nil }
+                if let previous = points.last, at <= previous.at { return nil }
+                points.append(UsageConsumptionPoint(at: at, amount: number.doubleValue))
+            }
+            series[key] = points
+        }
+
+        return NASConsumptionHistory(
+            codex: series["codex"] ?? [],
+            codexCredits: series["codexCredits"] ?? [],
+            claude: series["claude"] ?? [],
+            claudeFable: series["claudeFable"] ?? [],
+            gemini: series["gemini"] ?? [],
+            codexUsesCredits: codexUsesCredits,
+            collectedAt: collectedAt
+        )
+    }
+
+    /// A whole, non-boolean JSON number, or nil.
+    private static func exactInteger(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double == double.rounded(), abs(double) < 1_000_000 else { return nil }
+        return Int(double)
+    }
+
+    func applyingNASHistory(_ reading: NASConsumptionHistory) -> UsageSnapshot {
+        var copy = self
+        copy.nasHistory = reading
+        return copy
     }
 }
