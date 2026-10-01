@@ -195,6 +195,16 @@ def cmd_status(args, token: str):
             else:
                 print("betaTestingState: (제출 없음)")
 
+            try:
+                beta_detail = get_build_beta_detail(token, build["id"])
+                bd_attrs = beta_detail["attributes"]
+                print(f"internalBuildState: {bd_attrs.get('internalBuildState')}")
+                print(f"externalBuildState: {bd_attrs.get('externalBuildState')}")
+                print(f"autoNotifyEnabled: {bd_attrs.get('autoNotifyEnabled')}")
+            except (ApiError, RuntimeError) as e:
+                detail = e.errors if isinstance(e, ApiError) else str(e)
+                print(f"오류: buildBetaDetail 조회 실패 ({detail})", file=sys.stderr)
+
     print("betaGroups:")
     for g in groups:
         a = g["attributes"]
@@ -207,6 +217,14 @@ def cmd_status(args, token: str):
 def get_group_builds(token: str, group_id: str):
     resp = api_request(token, "GET", f"/v1/betaGroups/{group_id}/relationships/builds")
     return {b["id"] for b in resp.get("data", [])}
+
+
+def get_build_beta_detail(token: str, build_id: str):
+    resp = api_request(token, "GET", f"/v1/builds/{build_id}/buildBetaDetail")
+    data = resp.get("data")
+    if not data or "id" not in data:
+        raise RuntimeError(f"빌드 {build_id} 의 buildBetaDetail 리소스를 가져오지 못했습니다")
+    return data
 
 
 def get_existing_localization(token: str, build_id: str, locale: str = "ko"):
@@ -285,23 +303,20 @@ def cmd_prepare(args, token: str):
             )
             print(f"betaBuildLocalization 생성됨: {resp['data']['id']}")
 
-        build_beta_detail_id = build.get("relationships", {}).get("buildBetaDetail", {}).get("data", {}).get("id")
-        if build_beta_detail_id:
-            api_request(
-                token,
-                "PATCH",
-                f"/v1/buildBetaDetails/{build_beta_detail_id}",
-                body={
-                    "data": {
-                        "type": "buildBetaDetails",
-                        "id": build_beta_detail_id,
-                        "attributes": {"autoNotifyEnabled": True},
-                    }
-                },
-            )
-            print("buildBetaDetails autoNotifyEnabled=true 설정됨")
-        else:
-            print("경고: buildBetaDetail 관계를 찾을 수 없어 autoNotifyEnabled 설정을 건너뜁니다", file=sys.stderr)
+        beta_detail = get_build_beta_detail(token, build_id)
+        api_request(
+            token,
+            "PATCH",
+            f"/v1/buildBetaDetails/{beta_detail['id']}",
+            body={
+                "data": {
+                    "type": "buildBetaDetails",
+                    "id": beta_detail["id"],
+                    "attributes": {"autoNotifyEnabled": True},
+                }
+            },
+        )
+        print("buildBetaDetails autoNotifyEnabled=true 설정됨")
 
         existing_build_ids = get_group_builds(token, group_id)
         if build_id in existing_build_ids:
