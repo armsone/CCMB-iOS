@@ -40,7 +40,7 @@ def summary(path, series_key):
         return "mode=%o collectedAt=%s codexUnit=%s%s %s" % (st.st_mode & 0o777, doc.get("collectedAt"), doc.get("codexUnit"), interval, counts)
     except Exception:
         return "형식 확인 실패"
-print("history:", summary("/workspace/projects/CCMB-Usage/CCMB-nas-consumption-history-v1.json", "consumptionHistory"))
+print("history:", summary(os.path.expanduser("~/.local/share/hanstree-workroom/ccmb-usage/CCMB-nas-consumption-history-v1.json"), "consumptionHistory"))
 print("state:  ", summary(os.path.expanduser("~/.local/share/hanstree-workroom/ccmb-nas-consumption-state-v1.json"), "series"))
 def sidecar():
     try:
@@ -72,7 +72,7 @@ STAGE=/tmp/ccmb-nas-history-stage
 set -euo pipefail
 STAGE=$1 MODULE_SHA=$2 PATCH_SHA=$3 MODE=$4 LAUNCHER_SHA=$5
 APP=/workspace/web-app
-PROJECT=/workspace/projects/CCMB-Usage
+PROJECT="$HOME/.local/share/hanstree-workroom/ccmb-usage"
 # server-app.mjs: 패치 기준 원본, 5분 시절 패치 결과(주석 한 줄만 다름), 현재(3분) 패치 결과.
 BASE_SHA=5f8af1b2b1b84478bde3d901ee9b91d851c3d4e26ebe212094ae817ceb2dcec1
 OLD_PATCHED_SHA=3960bfa0817ba2af9491dc5b939bf78fbc8d57d836ce849ea4fa4f41485fc7fb
@@ -109,7 +109,7 @@ PY
 [ "$(sha "$STAGE/ccmb-usage-history.mjs")" = "$MODULE_SHA" ] || fail "모듈 전송 확인 실패"
 [ "$(sha "$STAGE/server-app.patch")" = "$PATCH_SHA" ] || fail "패치 전송 확인 실패"
 [ "$(sha "$STAGE/ccmb-usage-history-sidecar.mjs")" = "$LAUNCHER_SHA" ] || fail "사이드카 전송 확인 실패"
-[ -d "$PROJECT" ] && [ "$(realpath "$PROJECT")" = "$PROJECT" ] || fail "CCMB-Usage 프로젝트 폴더가 실제 폴더가 아님"
+[ -d "$PROJECT" ] && [ "$(realpath "$PROJECT")" = "$PROJECT" ] || fail "ccmb-usage 저장 폴더가 실제 폴더가 아님"
 [ ! -L "$APP/server-app.mjs" ] && [ -f "$APP/server-app.mjs" ] || fail "server-app.mjs가 일반 파일이 아님"
 [ ! -L "$APP/usage.py" ] && [ -f "$APP/usage.py" ] || fail "usage.py가 일반 파일이 아님"
 for f in "$PROJECT/CCMB-nas-consumption-history-v1.json" "$APP/ccmb-usage-history.mjs" "$APP/ccmb-usage-history-sidecar.mjs"; do

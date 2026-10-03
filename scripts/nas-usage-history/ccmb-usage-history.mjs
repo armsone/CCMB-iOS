@@ -6,7 +6,7 @@
 //
 // 저장 파일
 // - 기준값(baseline) + 기록 원본: DATA_DIR/ccmb-nas-consumption-state-v1.json (0600, 비공개, 내보내지 않음)
-// - 앱이 읽는 기록: /workspace/projects/CCMB-Usage/CCMB-nas-consumption-history-v1.json (0600)
+// - 앱이 읽는 기록: DATA_DIR/ccmb-usage/CCMB-nas-consumption-history-v1.json (0600)
 //   예전 Mac relay 파일(CCMB-consumption-history-v1.json)과 이름이 달라 섞이지 않는다.
 // 두 파일 모두 허용 목록의 숫자·시각·단위만 담는다(계정·경로·오류 문구·원본 응답 없음).
 //
@@ -37,7 +37,6 @@ const MAX_HISTORY_BYTES = 32_768;
 const MAX_STATE_BYTES = 65_536;
 const MAX_CREDITS = 1e12;
 
-const HISTORY_DIR = '/workspace/projects/CCMB-Usage';
 const HISTORY_NAME = 'CCMB-nas-consumption-history-v1.json';
 const STATE_NAME = 'ccmb-nas-consumption-state-v1.json';
 const LOCK_NAME = 'ccmb-nas-consumption-state-v1.lock';
@@ -268,6 +267,7 @@ export function startCcmbUsageHistory({ getUsage, dataDir, log = (m) => console.
     log(message);
   };
   const stateDir = path.resolve(dataDir);
+  const HISTORY_DIR = path.join(stateDir, 'ccmb-usage');
   let timer = null;
   let stopped = false;
   let running = false;

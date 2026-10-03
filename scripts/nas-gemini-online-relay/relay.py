@@ -3,8 +3,8 @@
 
 Reads this Mac's own gemini.online.{fiveHour,weekly} reading from the
 existing CCMB usage-v1.json, validates it against a small allowlisted
-contract, and relays it onto the user's own private NAS storage project
-(CCMB-Usage) over the already-configured SSH route.
+contract, and relays it onto the server's own private data folder
+(DATA_DIR/ccmb-usage) over the already-configured SSH route.
 
 Only `schemaVersion` and `gemini.online` of usage-v1.json are ever read;
 account, cookies, tokens, paths, and any other service field are never read
@@ -46,7 +46,7 @@ REMOTE_SCRIPT = r'''
 import sys, os, json, time, datetime, fcntl, errno
 
 MAX_BYTES = 8192
-TARGET_DIR = "/workspace/projects/CCMB-Usage"
+TARGET_DIR = "/home/developer/.local/share/hanstree-workroom/ccmb-usage"
 TARGET = os.path.join(TARGET_DIR, "CCMB-gemini-online-v1.json")
 
 

@@ -44,7 +44,7 @@ enum CCMBTheme {
 enum CCMBFormat {
     static func percent(_ value: Double?) -> String {
         guard let value else { return "정보 없음" }
-        return "\(Int(value.rounded()))%"
+        return String(format: "%.1f%%", value)
     }
 
     static func credits(_ value: Double?) -> String {

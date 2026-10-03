@@ -57,10 +57,11 @@ JSON 파일**을 읽어 그 두 칸만 채웁니다:
   기존 SSH 경로(`hanstree-dev`, BatchMode)로 값만 골라 전송합니다. NAS 쪽에는
   고정된(바뀌지 않는) 검증 코드만 base64 인자로, 실제 값은 표준입력으로 전달됩니다.
   비밀번호·토큰은 인자/출력 어디에도 없습니다.
-- 저장 위치: 기존에 만들어 둔 **비공개(private)** NAS 스토리지 프로젝트
-  `CCMB-Usage`(`projectID 1a5e36a6ff569127`) 안의
-  `/workspace/projects/CCMB-Usage/CCMB-gemini-online-v1.json` 한 파일뿐입니다.
-  NAS 서버 코드·권한·NAS 사용량 조회 UI는 전혀 바뀌지 않습니다.
+- 저장 위치: 서버의 **비공개(private)** 데이터 폴더
+  `DATA_DIR/ccmb-usage/CCMB-gemini-online-v1.json` 한 파일뿐입니다(이전에는 삭제된
+  프로젝트 `CCMB-Usage`의 `/workspace/projects/CCMB-Usage/` 아래에 있었습니다).
+  iPhone은 전용 `GET /api/ccmb/files?name=CCMB-gemini-online-v1.json`으로만 읽습니다.
+  NAS 서버 코드 중 이 전용 조회 엔드포인트 외에는 권한·NAS 사용량 조회 UI가 바뀌지 않습니다.
 - 계약: `{"schemaVersion":1,"gemini":{"online":{fiveHourRemainingPercent,
   weeklyRemainingPercent, fiveHourResetText, weeklyResetText, fetchedAt}}}`만
   허용합니다. `fetchedAt`은 Mac이 실제로 값을 읽은 시각이며, 중계된 시각으로

@@ -304,10 +304,11 @@ struct PassionSummaryCard: View {
         perSampleLabel: String
     ) -> String {
         let latestDate = series.flatMap(\.samples).map(\.at).max()
+        let isPercent = unit == "%"
         let parts = series.compactMap { item -> String? in
             guard let latestDate,
                   let amount = item.samples.last(where: { $0.at == latestDate })?.amount else { return nil }
-            return "\(item.label) \(amountTitle(amount))\(unit)"
+            return "\(item.label) \(isPercent ? percentAmountTitle(amount) : amountTitle(amount))\(unit)"
         }
         if parts.isEmpty, let emptyCaption { return emptyCaption }
         return "\(perSampleLabel) " + (parts.isEmpty ? "0\(unit)" : parts.joined(separator: " · "))
@@ -318,6 +319,10 @@ struct PassionSummaryCard: View {
         return String(format: format, value)
             .replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
+    }
+
+    private func percentAmountTitle(_ value: Double) -> String {
+        String(format: "%.1f", value)
     }
 }
 

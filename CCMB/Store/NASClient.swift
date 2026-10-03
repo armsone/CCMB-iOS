@@ -168,14 +168,11 @@ struct NASSnapshotClient {
 }
 
 /// Reads the single private, bounded Gemini web-session relay file the user
-/// authorized: the existing private NAS storage project `CCMB-Usage`
-/// (`projectID 1a5e36a6ff569127`), via that project's own authenticated
-/// download endpoint. This is a read of a file already placed there by the
-/// Mac-side relay script — no NAS quota UI, no new server endpoint, no new
-/// auth, and the same fixed HTTPS origin / `hw_session` cookie / no-redirect
-/// rules as `NASSnapshotClient`.
+/// authorized, via the server's own `CCMB-Usage` data store endpoint. This is
+/// a read of a file already placed there by the Mac-side relay script — no
+/// NAS quota UI, no new auth, and the same fixed HTTPS origin / `hw_session`
+/// cookie / no-redirect rules as `NASSnapshotClient`.
 struct NASGeminiOnlineClient {
-    static let projectID = "1a5e36a6ff569127"
     private static let relayFileName = "CCMB-gemini-online-v1.json"
     /// The relay contract caps the file at 8KiB; this stays generous enough
     /// to catch the real file while still rejecting a response that has
@@ -186,19 +183,19 @@ struct NASGeminiOnlineClient {
         try await Self.downloadRelayFile(named: Self.relayFileName, maxBytes: Self.maxResponseBytes)
     }
 
-    /// GET-only download of one fixed file name from the `CCMB-Usage`
-    /// project, shared by every file read from there (the Mac-relayed Gemini
-    /// online file and the NAS's own history file) so they all follow the
-    /// same origin/cookie/no-redirect/size rules.
+    /// GET-only download of one fixed file name from the server's
+    /// `CCMB-Usage` data store, shared by every file read from there (the
+    /// Mac-relayed Gemini online file and the NAS's own history file) so they
+    /// all follow the same origin/cookie/no-redirect/size rules.
     static func downloadRelayFile(named fileName: String, maxBytes: Int) async throws -> Data {
         let base = NASConfig.baseURL
         guard var components = URLComponents(
-            url: base.appendingPathComponent("api/projects/\(projectID)/download"),
+            url: base.appendingPathComponent("api/ccmb/files"),
             resolvingAgainstBaseURL: false
         ) else {
             throw NASFetchError.invalidAddress
         }
-        components.queryItems = [URLQueryItem(name: "path", value: fileName)]
+        components.queryItems = [URLQueryItem(name: "name", value: fileName)]
         guard let url = components.url else { throw NASFetchError.invalidAddress }
 
         guard let cookie = await NASSnapshotClient.sessionCookie(for: base) else {

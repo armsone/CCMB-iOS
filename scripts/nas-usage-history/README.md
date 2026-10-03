@@ -30,7 +30,7 @@ Mac 없이 NAS 앱이 스스로 3분마다 소비 기록을 남깁니다. iPhone
 
 | 파일 | 내용 | 공개 |
 |---|---|---|
-| `/workspace/projects/CCMB-Usage/CCMB-nas-consumption-history-v1.json` | 앱이 읽는 기록 | 기존 프로젝트 다운로드 API(로그인 필요) |
+| `~/.local/share/hanstree-workroom/ccmb-usage/CCMB-nas-consumption-history-v1.json` | 앱이 읽는 기록 | `GET /api/ccmb/files?name=...`(마스터 로그인 필요) |
 | `~/.local/share/hanstree-workroom/ccmb-nas-consumption-state-v1.json` | 기준값 + 기록 원본 | 내보내지 않음 |
 | `~/.local/share/hanstree-workroom/ccmb-nas-consumption-state-v1.lock` | 실행 중 잠금(끝나면 삭제) | — |
 
@@ -142,6 +142,9 @@ ssh hanstree-dev 'pid=$(pgrep -fx "/usr/local/bin/node /workspace/web-app/server
 ssh hanstree-dev 'B=/workspace/web-app/backup-ccmb-history-<시각>; cd /workspace/web-app && \
   for f in "$B"/*; do n=$(basename "$f"); cp -p "$f" ".$n.ccmb-rb" && mv -f ".$n.ccmb-rb" "$n"; done'
 ```
+
+기록 저장 위치는 서버 `DATA_DIR/ccmb-usage`(기존 `/workspace/projects/CCMB-Usage` 프로젝트 폴더에서 이전됨)이며,
+iPhone은 삭제된 프로젝트 다운로드 API 대신 서버 전용 `GET /api/ccmb/files?name=...`로 읽습니다.
 
 주의: 관리 자동 배포(support-automation)는 운영 `server-app.mjs`가 GitHub 저장소
 (`armsone/Hanstree-Workroom` main)와 같아야 진행합니다. 적용 후에는 같은 변경(패치 + 모듈)을 그
