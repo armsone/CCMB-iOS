@@ -2,7 +2,7 @@
 //
 // Mac 없이 NAS 앱(server-app.mjs)이 스스로 3분마다 기존 getUsage(true)(usage.py 수집기, 서비스별 180초 캐시·
 // 중복 실행 방지 포함)를 한 번 불러, 서비스별 실제 수집 시각(fetched_at)이 새로 바뀐 값만으로 직전 값과의 차이(소비량)를
-// 계산해 최근 40개만 남긴다. 새 인증·API·자격 증명은 만들지 않고, Node 표준 라이브러리만 쓴다.
+// 계산해 최근 400개(디스크 저장분)만 남긴다. 새 인증·API·자격 증명은 만들지 않고, Node 표준 라이브러리만 쓴다.
 //
 // 저장 파일
 // - 기준값(baseline) + 기록 원본: DATA_DIR/ccmb-nas-consumption-state-v1.json (0600, 비공개, 내보내지 않음)
@@ -11,7 +11,7 @@
 // 두 파일 모두 허용 목록의 숫자·시각·단위만 담는다(계정·경로·오류 문구·원본 응답 없음).
 //
 // 정직성 규칙
-// - 첫 수집은 기준값만 잡고 소비를 만들지 않는다(가짜 40개를 미리 채우지 않는다).
+// - 첫 수집은 기준값만 잡고 소비를 만들지 않는다(가짜 400개를 미리 채우지 않는다).
 // - 실패·stale·수집 시각이 그대로인 캐시·너무 오래된 값은 그 서비스만 건너뛴다(0으로 채우지 않는다).
 // - 초기화(resets_at 변경·지남), 남은 값 증가(충전·초기화), 단위 전환, 15분 넘는 공백은 소비로 치지 않고
 //   기준값만 다시 잡는다.
@@ -27,14 +27,16 @@ const INTERVAL_MS = INTERVAL_SECONDS * 1000;
 // usage.py 서비스별 캐시(어댑터 CACHE_TTL 180초)가 확실히 지난 뒤에 부르도록 5초 늦춘다(같은 캐시를 두 번 읽지 않게).
 const TICK_MARGIN_MS = 5_000;
 const MIN_DELAY_MS = 30_000;
-const MAX_SAMPLES = 40;
+const MAX_SAMPLES = 400;
+// 40개 시절에 쓰인 기록(slotCount 40)도 읽어 시각·값을 그대로 이어 받는다(디스크 저장은 400, 앱 응답은 여전히 40).
+const LEGACY_MAX_SAMPLES = 40;
 const SOURCE_MAX_AGE_MS = 10 * 60_000;
 const MAX_GAP_MS = 15 * 60_000;
 const RESET_TOLERANCE_SECONDS = 600;
 const FUTURE_SLACK_MS = 60_000;
 const LOCK_STALE_MS = 10 * 60_000;
-const MAX_HISTORY_BYTES = 32_768;
-const MAX_STATE_BYTES = 65_536;
+const MAX_HISTORY_BYTES = 262_144;
+const MAX_STATE_BYTES = 524_288;
 const MAX_CREDITS = 1e12;
 
 const HISTORY_NAME = 'CCMB-nas-consumption-history-v1.json';
@@ -168,7 +170,8 @@ function validHistory(doc) {
   if (!sameKeys(doc, ['schemaVersion', 'source', 'intervalSeconds', 'slotCount', 'collectedAt', 'codexUnit', 'consumptionHistory'])) return false;
   return doc.schemaVersion === 1 && doc.source === 'nas'
     && (doc.intervalSeconds === INTERVAL_SECONDS || doc.intervalSeconds === LEGACY_INTERVAL_SECONDS)
-    && doc.slotCount === MAX_SAMPLES && isIsoTime(doc.collectedAt) && UNITS.includes(doc.codexUnit)
+    && (doc.slotCount === MAX_SAMPLES || doc.slotCount === LEGACY_MAX_SAMPLES)
+    && isIsoTime(doc.collectedAt) && UNITS.includes(doc.codexUnit)
     && validSeries(doc.consumptionHistory, isIsoTime);
 }
 

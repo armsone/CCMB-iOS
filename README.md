@@ -113,8 +113,9 @@ NAS 연결 때 아래 그래프는 **NAS가 스스로 3분마다** 모은 소비
   Fable 주간, Gemini 세션. 표본 = 직전 실제 값 대비 줄어든 양.
 - 첫 수집은 기준값만 잡습니다(가짜 기록 없음). 실패·오래된 값은 그 서비스만 비워 두고(0으로 채우지
   않음), 초기화·충전·단위 전환·15분 넘는 공백은 소비로 치지 않고 기준값만 다시 잡습니다.
-- 저장 위치: 같은 비공개 프로젝트의 `CCMB-nas-consumption-history-v1.json`(최근 40개). 기준값은
-  프로젝트 밖 NAS 앱 데이터 폴더에 따로 두어 내보내지 않습니다.
+- 저장 위치: 서버의 비공개 데이터 폴더 `DATA_DIR/ccmb-usage/CCMB-nas-consumption-history-v1.json`
+  (디스크에는 최근 400개까지 쌓이지만, 앱이 받는 값은 최근 40개입니다). 기준값은 같은 데이터 폴더 밖
+  NAS 앱 데이터 폴더에 따로 두어 내보내지 않습니다.
 - 계약: `{"schemaVersion":1,"source":"nas","intervalSeconds":180,"slotCount":40,"collectedAt",
   "codexUnit":"percent"|"credits","consumptionHistory":{codex,codexCredits,claude,claudeFable,gemini}}`만
   허용합니다. 표본은 `{at, amount}`, 시각은 시간대가 있는 ISO 8601(엄격히 증가, 5분 넘는 미래 금지),
