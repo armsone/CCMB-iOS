@@ -1,14 +1,11 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Routes between the four top-level states: 처음(빈 상태), 불러오는 중,
-/// 정상 대시보드, 읽기 실패. The file importer lives here so every state
-/// can offer the same manual-file fallback action.
+/// 정상 대시보드, 읽기 실패.
 struct RootView: View {
     @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var weatherStore: WeatherStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
-    @State private var showImporter = false
 
     var body: some View {
         NavigationStack {
@@ -36,15 +33,6 @@ struct RootView: View {
                             .font(.headline)
                     }
                 }
-                .fileImporter(
-                    isPresented: $showImporter,
-                    allowedContentTypes: [.json],
-                    allowsMultipleSelection: false
-                ) { result in
-                    if case .success(let urls) = result, let url = urls.first {
-                        store.importPicked(url: url)
-                    }
-                }
                 .sheet(isPresented: $store.isNASLoginPresented) {
                     NASLoginSheetView()
                 }
@@ -55,10 +43,7 @@ struct RootView: View {
     private var content: some View {
         switch store.state {
         case .empty:
-            WelcomeView(
-                onLoadFromCloud: { Task { await store.refreshFromCloud() } },
-                onPickFile: { showImporter = true }
-            )
+            WelcomeView()
         case .loading:
             VStack(spacing: 12) {
                 ProgressView()
@@ -66,13 +51,9 @@ struct RootView: View {
                     .foregroundStyle(.secondary)
             }
         case .loaded(let snapshot):
-            DashboardView(snapshot: snapshot, onPickFile: { showImporter = true })
+            DashboardView(snapshot: snapshot)
         case .failed(let message):
-            FailureView(
-                message: message,
-                onLoadFromCloud: { Task { await store.refreshFromCloud() } },
-                onPickFile: { showImporter = true }
-            )
+            FailureView(message: message)
         }
     }
 }
@@ -83,8 +64,6 @@ struct FailureView: View {
     @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
     let message: String
-    let onLoadFromCloud: () -> Void
-    let onPickFile: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -95,24 +74,18 @@ struct FailureView: View {
             Text(message)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
-            Button("iCloud에서 다시 불러오기") { onLoadFromCloud() }
-                .buttonStyle(.borderedProminent)
-                .tint(CCMBTheme.charcoal)
-                .controlSize(.large)
-            Button("다른 방법: Dropbox·Google Drive 파일 선택") { onPickFile() }
-                .buttonStyle(.bordered)
-                .tint(CCMBTheme.charcoal)
             Button {
                 store.requestNASLogin()
             } label: {
                 if store.nasConnecting {
                     ProgressView()
                 } else {
-                    Text("다른 방법: NAS에서 불러오기")
+                    Text("NAS에서 다시 불러오기")
                 }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .tint(CCMBTheme.charcoal)
+            .controlSize(.large)
             .disabled(store.nasConnecting)
             if let nasError = store.nasConnectError {
                 Text(nasError)

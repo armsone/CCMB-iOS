@@ -135,8 +135,10 @@ final class SnapshotStore: ObservableObject {
     func loadOnLaunch() {
         guard !didLoadOnLaunch else { return }
         didLoadOnLaunch = true
-        preferredSource = UserDefaults.standard.string(forKey: Self.preferredSourceDefaultsKey)
-            .flatMap(PreferredSource.init(rawValue:)) ?? .cloud
+        // NAS is the only selectable source now. A previously saved cloud or
+        // file preference is left untouched on disk (never cleared here) but
+        // must no longer cause a cloud/file fetch on startup.
+        preferredSource = .nas
         displayedSource = preferredSource
         let savedInterval = UserDefaults.standard.double(forKey: Self.automaticRefreshDefaultsKey)
         automaticRefreshInterval = Self.automaticRefreshOptions.contains(savedInterval) ? savedInterval : 60

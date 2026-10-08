@@ -9,7 +9,6 @@ struct DashboardView: View {
     @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
     let snapshot: UsageSnapshot
-    let onPickFile: () -> Void
 
     private let columns = [GridItem(.adaptive(minimum: 250), spacing: 16)]
     private let primaryServices: [Service] = [.codex, .claude, .gemini]
@@ -36,7 +35,7 @@ struct DashboardView: View {
                     banner(text: addressChangedText, isWarning: true)
                 }
 
-                AutomaticRefreshCard(focus: snapshot.focusLimit, onPickFile: onPickFile)
+                AutomaticRefreshCard()
 
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(primaryServices) { service in
@@ -86,19 +85,24 @@ struct DashboardView: View {
                         Label("테마와 앱 아이콘", systemImage: "paintpalette.fill")
                     }
                     Button {
-                        Task { await store.refreshFromCloud() }
-                    } label: {
-                        Label("iCloud에서 불러오기", systemImage: "icloud.and.arrow.down")
-                    }
-                    Button {
-                        onPickFile()
-                    } label: {
-                        Label("Dropbox·Google Drive 파일 선택", systemImage: "folder")
-                    }
-                    Button {
                         store.requestNASLogin()
                     } label: {
                         Label("NAS에서 불러오기", systemImage: "externaldrive.connected.to.line.below")
+                    }
+                    Menu {
+                        ForEach(SnapshotStore.automaticRefreshOptions, id: \.self) { seconds in
+                            Button {
+                                store.setAutomaticRefreshInterval(seconds)
+                            } label: {
+                                if store.automaticRefreshInterval == seconds {
+                                    Label(AutomaticRefreshCard.intervalLabel(seconds), systemImage: "checkmark")
+                                } else {
+                                    Text(AutomaticRefreshCard.intervalLabel(seconds))
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("자동 새로 고침 주기", systemImage: "timer")
                     }
                 } label: {
                     Label("메뉴", systemImage: "line.3.horizontal")
@@ -396,70 +400,10 @@ private struct RefreshConsumptionBars: View {
 struct AutomaticRefreshCard: View {
     @EnvironmentObject private var store: SnapshotStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
-    let focus: UsageSnapshot.FocusLimit?
-    let onPickFile: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                refreshBar(now: context.date)
-            }
-
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(SnapshotStore.automaticRefreshOptions, id: \.self) { seconds in
-                        Button {
-                            store.setAutomaticRefreshInterval(seconds)
-                        } label: {
-                            if store.automaticRefreshInterval == seconds {
-                                Label(intervalLabel(seconds), systemImage: "checkmark")
-                            } else {
-                                Text(intervalLabel(seconds))
-                            }
-                        }
-                    }
-                } label: {
-                    settingRow(title: "주기", value: intervalLabel(store.automaticRefreshInterval))
-                }
-                .frame(width: 118)
-
-                Menu {
-                    Button {
-                        Task { await store.refreshFromCloud() }
-                    } label: {
-                        Label("iCloud 개인 영역", systemImage: store.preferredSource == .cloud ? "checkmark.icloud" : "icloud")
-                    }
-                    if store.hasPickedFile {
-                        Button {
-                            store.usePickedFile()
-                        } label: {
-                            Label(
-                                store.sourceFileName ?? "선택한 파일",
-                                systemImage: store.preferredSource == .file ? "checkmark.circle" : "doc"
-                            )
-                        }
-                    }
-                    Button {
-                        store.requestNASLogin()
-                    } label: {
-                        Label("NAS", systemImage: store.preferredSource == .nas ? "checkmark.externaldrive" : "externaldrive")
-                    }
-                    Divider()
-                    Button(action: onPickFile) {
-                        Label("Dropbox·Google Drive 파일 선택", systemImage: "folder.badge.plus")
-                    }
-                } label: {
-                    settingRow(title: "불러올 곳", value: sourceLabel)
-                }
-                .frame(maxWidth: .infinity)
-                .layoutPriority(1)
-            }
-
-            if let focus {
-                Divider()
-                    .padding(.vertical, 2)
-                FocusLimitCardView(focus: focus)
-            }
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            refreshBar(now: context.date)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,37 +438,7 @@ struct AutomaticRefreshCard: View {
         .accessibilityLabel("지금 새로 고침. 다음 자동 갱신까지 \(Int(ceil(remaining)))초. 항상 켜짐")
     }
 
-    private func settingRow(title: String, value: String) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            Spacer()
-            Text(value)
-                .fontWeight(.semibold)
-                .foregroundStyle(Color.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .font(.subheadline)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var sourceLabel: String {
-        switch store.preferredSource {
-        case .cloud: return "iCloud"
-        case .file: return store.sourceFileName ?? "선택한 파일"
-        case .nas: return "NAS"
-        }
-    }
-
-    private func intervalLabel(_ seconds: TimeInterval) -> String {
+    static func intervalLabel(_ seconds: TimeInterval) -> String {
         switch seconds {
         case 30: return "30초"
         case 60: return "1분"
@@ -533,49 +447,5 @@ struct AutomaticRefreshCard: View {
         case 600: return "10분"
         default: return "\(Int(seconds))초"
         }
-    }
-}
-
-/// 홈 상단의 가장 큰 카드: 실제 값이 있는 주요 한도 중 남은 비율이 가장
-/// 낮은 것 하나. Signal red is reserved for the genuinely low case.
-struct FocusLimitCardView: View {
-    let focus: UsageSnapshot.FocusLimit
-
-    private var remaining: Double { focus.window.remainingPercent ?? 0 }
-    private var tint: Color { CCMBTheme.serviceTint(focus.service, windowID: focus.window.id) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("소진 임박")
-                    .fixedSize()
-                Text("\(focus.service.displayName) · \(focus.window.label)")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer()
-                Text(CCMBFormat.percent(focus.window.remainingPercent))
-                    .monospacedDigit()
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(tint.opacity(0.78))
-            ProgressView(value: remaining / 100)
-                .tint(tint)
-            HStack {
-                if let resetText = focus.window.resetText {
-                    Text("초기화 \(CCMBFormat.resetText(resetText) ?? resetText)")
-                } else if let resetsAt = focus.window.resetsAt {
-                    Text("초기화 \(CCMBFormat.resetTime(resetsAt))")
-                }
-                Spacer()
-                Text("기준 \(CCMBFormat.relativeAge(focus.fetchedAt))")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "소진 임박 한도. \(focus.service.displayName) \(focus.window.label), 남음 \(CCMBFormat.percent(focus.window.remainingPercent))"
-        )
     }
 }
