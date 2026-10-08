@@ -338,7 +338,7 @@ struct CCMBRingGauge: View {
                     )
                     .rotationEffect(.degrees(90))
                     .scaleEffect(x: -1, y: 1)
-                Text(value == nil ? "—" : String(format: "%.1f", displayedValue))
+                Text(value == nil ? "—" : String(format: "%.0f", displayedValue))
                     .font(.system(.body, design: .rounded).weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.55)

@@ -1,6 +1,37 @@
 import SwiftUI
 import WebKit
 
+@MainActor
+private final class NASLoginPage: ObservableObject {
+    weak var webView: WKWebView?
+
+    /// Submit the website's own form; never read or copy its password.
+    func submit(completion: @escaping (Bool) -> Void) {
+        guard let webView, let url = webView.url,
+              NASLoginSheetView.Origin(url: url) == NASLoginSheetView.Origin(url: NASConfig.baseURL)
+        else {
+            completion(false)
+            return
+        }
+        // End editing first so mobile IME composition is committed and the
+        // website's own submit button/error message is no longer obscured.
+        webView.endEditing(true)
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript("""
+                (() => {
+                    const form = document.getElementById('loginForm');
+                    if (!form || form.hidden) return false;
+                    form.requestSubmit();
+                    form.querySelector('button[type="submit"]')?.scrollIntoView({block: 'nearest'});
+                    return true;
+                })()
+                """) { result, error in
+                    completion(error == nil && (result as? Bool) == true)
+                }
+        }
+    }
+}
+
 /// The NAS's own website login page, unmodified. The app never collects the
 /// NAS password itself. The login is a SPA: it `POST`s `/api/login` and
 /// calls `enterApp()` without a page navigation, so detection cannot rely on
@@ -12,11 +43,14 @@ import WebKit
 private struct NASLoginWebView: UIViewRepresentable {
     let url: URL
     let allowedOrigin: NASLoginSheetView.Origin
+    let page: NASLoginPage
     let onBlockedNavigation: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         webView.navigationDelegate = context.coordinator
+        webView.scrollView.keyboardDismissMode = .interactive
+        page.webView = webView
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -98,10 +132,10 @@ struct NASLoginSheetView: View {
     @State private var observer: NASCookieObserver?
     @State private var pollTask: Task<Void, Never>?
     @State private var isVerifying = false
-    @State private var verifyFailed = false
+    @StateObject private var loginPage = NASLoginPage()
     @State private var blockedNavigation = false
     /// Set false on disappear/cancel so a verification already past its
-    /// await point can never dismiss, connect, or flip the failure flag
+    /// await point can never dismiss or connect
     /// after the user has left the sheet.
     @State private var isActive = true
 
@@ -112,7 +146,7 @@ struct NASLoginSheetView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if let origin {
-                    NASLoginWebView(url: baseURL, allowedOrigin: origin, onBlockedNavigation: {
+                    NASLoginWebView(url: baseURL, allowedOrigin: origin, page: loginPage, onBlockedNavigation: {
                         blockedNavigation = true
                     })
                 } else {
@@ -129,20 +163,22 @@ struct NASLoginSheetView: View {
                         .padding(.top, 8)
                 }
                 VStack(spacing: 8) {
-                    if verifyFailed {
-                        Text("로그인 확인에 실패했습니다. 로그인을 마친 뒤 다시 시도해 주세요.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
+                    Text("비밀번호를 입력하고 아래 로그인 버튼을 눌러 주세요.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                     Button {
-                        verifyFailed = false
-                        verifyNow()
+                        loginPage.submit { submitted in
+                            guard isActive else { return }
+                            // Successful form submission is detected by the
+                            // cookie observer. If already logged in, recheck.
+                            if !submitted { verifyNow() }
+                        }
                     } label: {
                         if isVerifying {
                             ProgressView()
                         } else {
-                            Text("로그인 후 불러오기")
+                            Text("로그인")
                         }
                     }
                     .buttonStyle(.bordered)
@@ -183,7 +219,6 @@ struct NASLoginSheetView: View {
     private func verifyNow() {
         pollTask?.cancel()
         isVerifying = true
-        verifyFailed = false
         pollTask = Task { @MainActor in
             defer { isVerifying = false }
             for attempt in 0..<6 {
@@ -197,9 +232,6 @@ struct NASLoginSheetView: View {
                 if attempt < 5 {
                     try? await Task.sleep(nanoseconds: 400_000_000)
                 }
-            }
-            if !Task.isCancelled, isActive {
-                verifyFailed = true
             }
         }
     }
