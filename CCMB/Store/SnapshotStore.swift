@@ -421,7 +421,7 @@ final class SnapshotStore: ObservableObject {
                 refreshProblem = nil
                 codexCreditsSpentLast30Minutes = nil
                 scheduleAutomaticRefresh()
-                refreshGeminiOnline(generation: myGeneration)
+                // Gemini 온라인 별도 수집은 중단한다.
                 refreshNASHistory(generation: myGeneration)
             } catch {
                 guard myGeneration == generation else { return }
@@ -486,7 +486,7 @@ final class SnapshotStore: ObservableObject {
             displayedNASAddress = NASConfig.baseURL.absoluteString
             lastReadAt = Date()
             refreshProblem = nil
-            refreshGeminiOnline(generation: myGeneration)
+            // Gemini 온라인 별도 수집은 중단한다.
             refreshNASHistory(generation: myGeneration)
         } catch {
             guard preferredSource == .nas, myGeneration == generation else { return }
@@ -707,8 +707,8 @@ final class SnapshotStore: ObservableObject {
     /// optional extras; each cached copy is attached on its own, so one
     /// missing never hides the other.
     private func applyingCachedNASExtras(to snapshot: UsageSnapshot) -> UsageSnapshot {
-        let withOnline = loadCachedGeminiOnline().map(snapshot.applyingGeminiOnline) ?? snapshot
-        return loadCachedNASHistory().map(withOnline.applyingNASHistory) ?? withOnline
+        // Gemini 온라인은 캐시에 남아 있어도 다시 표시하지 않는다.
+        return loadCachedNASHistory().map(snapshot.applyingNASHistory) ?? snapshot
     }
 
     private func nasHistoryCacheURL() -> URL {

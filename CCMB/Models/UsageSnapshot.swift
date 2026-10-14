@@ -415,16 +415,8 @@ struct UsageSnapshot {
     }
 
     private static func parseGemini(_ gemini: JSONObject?) -> ServiceUsage {
-        // The Mac keeps authenticated web-page readings under `online` while
-        // the CLI-derived fields stay at the service root. Prefer the root
-        // contract and fill its gaps from the web reading so the phone still
-        // shows Gemini's session and weekly limits when only that source is
-        // available. The web source currently exposes reset captions rather
-        // than machine-readable dates, so those remain honestly empty.
-        let online = gemini?.object("online")
-        let fetchedAt = [gemini?.date("fetchedAt"), online?.date("fetchedAt")]
-            .compactMap { $0 }
-            .max()
+        // Gemini 온라인(웹) 사용량은 더 이상 표시하지 않는다. CLI 세션/주간만 쓴다.
+        let fetchedAt = gemini?.date("fetchedAt")
         return ServiceUsage(
             service: .gemini,
             status: gemini?.string("status"),
@@ -446,22 +438,6 @@ struct UsageSnapshot {
                     remainingPercent: gemini?.double("weeklyRemainingPercent"),
                     resetsAt: gemini?.date("weeklyResetsAt"),
                     unavailabilityNote: gemini?.double("weeklyRemainingPercent") == nil ? "미제공" : nil
-                ),
-                UsageWindow(
-                    id: "onlineFiveHour",
-                    label: "O세션",
-                    remainingPercent: online?.double("fiveHourRemainingPercent"),
-                    resetsAt: online?.date("fiveHourResetsAt"),
-                    resetText: online?.string("fiveHourResetText"),
-                    unavailabilityNote: online?.double("fiveHourRemainingPercent") == nil ? "미제공" : nil
-                ),
-                UsageWindow(
-                    id: "onlineWeekly",
-                    label: "O주간",
-                    remainingPercent: online?.double("weeklyRemainingPercent"),
-                    resetsAt: online?.date("weeklyResetsAt"),
-                    resetText: online?.string("weeklyResetText"),
-                    unavailabilityNote: online?.double("weeklyRemainingPercent") == nil ? "미제공" : nil
                 )
             ],
             creditBalance: gemini?.double("creditBalance"),
@@ -707,11 +683,8 @@ extension UsageSnapshot {
 
     /// Only the "Gemini Models" pool is shown; the NAS's "Claude and GPT
     /// models" pool under the same service belongs to a different quota and
-    /// must never be mislabeled as Gemini's own limit. The NAS quota API
-    /// itself has no authenticated-web ("online") reading — that only
-    /// arrives later via `applyingGeminiOnline`, once the Mac-side relay has
-    /// actually saved one — so these two placeholder windows start out
-    /// waiting rather than claiming the data does not exist at all.
+    /// must never be mislabeled as Gemini's own limit. Gemini 온라인(웹)
+    /// 사용량은 더 이상 표시하지 않는다.
     private static func parseNASGemini(_ service: JSONObject?) -> ServiceUsage {
         let items = nasItems(service)
         let fiveHour = items.first {
@@ -734,20 +707,6 @@ extension UsageSnapshot {
                 remainingPercent: weekly?.percent("remaining_percent"),
                 resetsAt: weekly?.epochSecondsDate("resets_at"),
                 unavailabilityNote: weekly == nil ? "NAS 데이터에서 제공되지 않음" : nil
-            ),
-            UsageWindow(
-                id: "onlineFiveHour",
-                label: "O세션",
-                remainingPercent: nil,
-                resetsAt: nil,
-                unavailabilityNote: "Mac에서 NAS 저장 대기"
-            ),
-            UsageWindow(
-                id: "onlineWeekly",
-                label: "O주간",
-                remainingPercent: nil,
-                resetsAt: nil,
-                unavailabilityNote: "Mac에서 NAS 저장 대기"
             )
         ]
         return ServiceUsage(

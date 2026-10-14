@@ -101,7 +101,7 @@ struct ServiceDetailView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if usage.service == .gemini, isNAS {
-                    Text("O세션/O주간은 Mac이 Gemini 웹(gemini.google.com)에서 직접 수집해 NAS의 저장 공간에 보관한 값입니다. 나머지(C세션/C주간)는 NAS가 Gemini CLI에서 직접 조회한 값입니다. 두 값은 수집 시각이 다를 수 있습니다.")
+                    Text("C세션/C주간은 NAS가 Gemini CLI에서 직접 조회한 값입니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
