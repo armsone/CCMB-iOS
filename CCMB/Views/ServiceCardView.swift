@@ -51,10 +51,13 @@ struct ServiceCardView: View {
                 Image(systemName: serviceSymbol)
                     .foregroundStyle(tint)
                     .accessibilityHidden(true)
-                Text(usage.service.displayName)
+                Text((store.displayedSource == .nas && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName)
                     .font(.headline)
                     .foregroundStyle(tint)
                 Spacer()
+                if isBusy {
+                    tagText("갱신 중")
+                }
                 statusTag
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(refreshStatus(now: context.date))
@@ -108,10 +111,28 @@ struct ServiceCardView: View {
                     .font(.caption)
                 }
             } else {
-                Text("정보 없음 — Mac의 CCMB에서 이 서비스가 켜져 있는지 확인하세요.")
+                Text(store.displayedSource == .nas
+                     ? "정보 없음 — NAS에서 이 계정의 값을 아직 받지 못했습니다."
+                     : "정보 없음 — Mac의 CCMB에서 이 서비스가 켜져 있는지 확인하세요.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let serviceNotice {
+                Text(serviceNotice)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if store.displayedSource == .nas {
+                ForEach(usage.executionStatusLines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
         }
@@ -124,11 +145,35 @@ struct ServiceCardView: View {
         .accessibilityHint("자세한 내용을 보려면 여세요.")
     }
 
+    private var isBusy: Bool {
+        store.displayedSource == .nas && store.nasRefreshBusy && usage.service != .grok
+    }
+
+    /// Why this card's values are old or missing: a preserved last good
+    /// reading or stale value with its original collection time, and the
+    /// NAS's structured reason.
+    private var serviceNotice: String? {
+        var parts: [String] = []
+        if usage.isLastKnown {
+            parts.append("마지막 정상값")
+        } else if usage.status == "stale", usage.hasAnyData {
+            parts.append("오래된 값")
+        }
+        if usage.isLastKnown || usage.status == "stale", let fetchedAt = usage.fetchedAt {
+            parts.append("원본 \(CCMBFormat.macCollectionTime(fetchedAt)) 조회")
+        }
+        if let reason = usage.errorReason {
+            parts.append(reason)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private var serviceSymbol: String {
         switch usage.service {
         case .codex: return "sparkles"
         case .claude: return "sun.max.fill"
         case .gemini: return "diamond.fill"
+        case .gemini2: return "diamond.lefthalf.filled"
         case .grok: return "bolt.fill"
         }
     }
@@ -208,7 +253,8 @@ struct ServiceCardView: View {
     }
 
     private var accessibilitySummary: String {
-        var parts = [usage.service.displayName]
+        let serviceName = (store.displayedSource == .nas && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName
+        var parts = [serviceName]
         for window in displayedWindows {
             if window.remainingPercent != nil {
                 var entry = "\(displayLabel(for: window)) 남음 \(CCMBFormat.percent(window.remainingPercent))"
@@ -230,6 +276,8 @@ struct ServiceCardView: View {
             parts.append("크레딧 \(CCMBFormat.credits(credit))")
         }
         parts.append("가져온 시각 \(CCMBFormat.relativeAge(usage.fetchedAt))")
+        if isBusy { parts.append("갱신 중") }
+        if let serviceNotice { parts.append(serviceNotice) }
         return parts.joined(separator: ", ")
     }
 }

@@ -71,6 +71,12 @@ final class SnapshotStore: ObservableObject {
     /// Same idea for the optional NAS-stored consumption history fetch; the
     /// last good history stays on screen regardless of this.
     @Published private(set) var nasHistoryIssue: String?
+    /// How the last user-requested NAS refresh ended (busy, deferred,
+    /// failed…) while the stored snapshot stays on screen.
+    @Published private(set) var nasRefreshNotice: String?
+    /// The NAS is still collecting: the live v2 `collection.state`, or the
+    /// bounded refresh wait ran out before the job finished.
+    @Published private(set) var nasRefreshBusy = false
 
     /// Fixed playground address, shared by login and usage reads.
     let nasBaseURLString = NASConfig.baseURLString
@@ -90,6 +96,9 @@ final class SnapshotStore: ObservableObject {
     private var cloudRefreshPending = false
     private var nasRefreshInFlight = false
     private var nasRefreshPending = false
+    /// Monotonic time before which no new refresh POST is sent, from the
+    /// server's `retry_after_seconds`.
+    private var nasRefreshNotBefore: TimeInterval?
     private var automaticRefreshTimer: Timer?
     private var didLoadOnLaunch = false
     /// Bumped on every explicit user source selection (loading from iCloud,
@@ -153,9 +162,8 @@ final class SnapshotStore: ObservableObject {
                 // mislabeled or destructively deleted. The comparison is the
                 // full origin (scheme+host+port), not just the host, so a
                 // port-only change is never mistaken for the same NAS.
-                if Self.nasCacheOrigin(data) == NASConfig.baseURL.absoluteString,
-                   let snapshot = try? UsageSnapshot.parseNAS(data) {
-                    state = .loaded(applyingCachedNASExtras(to: snapshot))
+                if let cached = NASCacheCodec.decodeSnapshotCache(data, origin: NASConfig.baseURL.absoluteString) {
+                    state = .loaded(applyingCachedNASExtras(to: cached.snapshot))
                     origin = .savedCopy
                     displayedNASAddress = NASConfig.baseURL.absoluteString
                     codexCreditsSpentLast30Minutes = nil
@@ -361,6 +369,8 @@ final class SnapshotStore: ObservableObject {
         sourceFileName = nil
         refreshProblem = nil
         nasConnectError = nil
+        nasRefreshNotice = nil
+        nasRefreshBusy = false
         setPreferredSource(.cloud)
         displayedSource = .cloud
         displayedNASAddress = nil
@@ -408,12 +418,14 @@ final class SnapshotStore: ObservableObject {
         Task {
             defer { nasConnecting = false }
             do {
-                let data = try await nasClient.fetchUsage(refresh: false)
-                let snapshot = try UsageSnapshot.parseNAS(data)
+                let result = try await nasClient.fetchSnapshot(refresh: false)
+                let prepared = try prepareNASSnapshot(result)
                 guard myGeneration == generation else { return }
-                persistGoodCopy(data, source: .nas)
+                writeNASCache(prepared.cacheData)
                 setPreferredSource(.nas)
-                state = .loaded(applyingCachedNASExtras(to: snapshot))
+                state = .loaded(applyingCachedNASExtras(to: prepared.snapshot))
+                nasRefreshBusy = prepared.snapshot.collectionBusy
+                nasRefreshNotice = nil
                 origin = .nas
                 displayedSource = .nas
                 displayedNASAddress = NASConfig.baseURL.absoluteString
@@ -423,6 +435,8 @@ final class SnapshotStore: ObservableObject {
                 scheduleAutomaticRefresh()
                 // Gemini 온라인 별도 수집은 중단한다.
                 refreshNASHistory(generation: myGeneration)
+            } catch is CancellationError {
+                return
             } catch {
                 guard myGeneration == generation else { return }
                 if let fetchError = error as? NASFetchError, case .notAuthenticated = fetchError {
@@ -475,12 +489,23 @@ final class SnapshotStore: ObservableObject {
             state = .loading
         }
 
+        // A user refresh inside the server's `retry_after_seconds` re-reads
+        // the stored snapshot instead of sending another refresh request.
+        let throttled = !isAutomatic && (nasRefreshNotBefore.map { ProcessInfo.processInfo.systemUptime < $0 } ?? false)
+
         do {
-            let data = try await nasClient.fetchUsage(refresh: !isAutomatic)
-            let snapshot = try UsageSnapshot.parseNAS(data)
+            let result = try await nasClient.fetchSnapshot(refresh: !isAutomatic && !throttled)
+            if let retryAfter = result.retryAfterSeconds {
+                nasRefreshNotBefore = ProcessInfo.processInfo.systemUptime + retryAfter
+            }
+            let prepared = try prepareNASSnapshot(result)
             guard preferredSource == .nas, myGeneration == generation else { return }
-            persistGoodCopy(data, source: .nas)
-            state = .loaded(applyingCachedNASExtras(to: snapshot))
+            writeNASCache(prepared.cacheData)
+            state = .loaded(applyingCachedNASExtras(to: prepared.snapshot))
+            nasRefreshBusy = prepared.snapshot.collectionBusy || result.refreshOutcome == .stillRunning
+            if !isAutomatic {
+                nasRefreshNotice = Self.refreshNotice(for: result.refreshOutcome, throttled: throttled && result.isV2)
+            }
             origin = .nas
             displayedSource = .nas
             displayedNASAddress = NASConfig.baseURL.absoluteString
@@ -488,8 +513,12 @@ final class SnapshotStore: ObservableObject {
             refreshProblem = nil
             // Gemini 온라인 별도 수집은 중단한다.
             refreshNASHistory(generation: myGeneration)
+        } catch is CancellationError {
+            return
         } catch {
             guard preferredSource == .nas, myGeneration == generation else { return }
+            nasRefreshBusy = false
+            nasRefreshNotice = nil
             let message = (error as? NASFetchError)?.errorDescription
                 ?? "NAS 응답을 해석할 수 없습니다. NAS 앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요."
             switch state {
@@ -508,6 +537,37 @@ final class SnapshotStore: ObservableObject {
             if !isAutomatic, let fetchError = error as? NASFetchError, case .notAuthenticated = fetchError {
                 isNASLoginPresented = true
             }
+        }
+    }
+
+    private func prepareNASSnapshot(_ result: NASSnapshotFetchResult) throws -> NASCacheCodec.PreparedSnapshot {
+        try NASCacheCodec.prepareSnapshot(
+            result.data,
+            isV2: result.isV2,
+            previousCache: try? Data(contentsOf: cacheURL(for: .nas)),
+            origin: NASConfig.baseURL.absoluteString
+        )
+    }
+
+    private func writeNASCache(_ data: Data) {
+        try? data.write(to: cacheURL(for: .nas), options: [.atomic, .completeFileProtection])
+    }
+
+    private static func refreshNotice(for outcome: NASRefreshOutcome?, throttled: Bool) -> String? {
+        if throttled {
+            return "방금 갱신을 요청해서 저장된 값을 다시 읽었습니다. 잠시 후 다시 새로 고칠 수 있습니다."
+        }
+        switch outcome {
+        case .none, .completed?:
+            return nil
+        case .failed?:
+            return "NAS 수집이 실패해 서비스별 마지막 저장값과 오류 사유를 표시합니다."
+        case .deferred?:
+            return "최근에 갱신되어 NAS가 새 수집을 미뤘습니다. 저장된 값을 표시합니다."
+        case .stillRunning?:
+            return "NAS가 아직 수집 중입니다. 저장된 값을 먼저 표시합니다."
+        case .jobUnavailable?:
+            return "갱신 작업 상태를 확인하지 못해 저장된 값을 표시합니다."
         }
     }
 
@@ -556,60 +616,11 @@ final class SnapshotStore: ObservableObject {
         }
     }
 
+    /// Mac snapshots only; NAS copies go through `NASCacheCodec` so a raw
+    /// NAS response is never written to disk.
     private func persistGoodCopy(_ data: Data, source: PreferredSource) {
-        let toWrite = source == .nas ? Self.sanitizedNASCopy(data, origin: NASConfig.baseURL.absoluteString) : data
-        guard let toWrite else { return }
-        try? toWrite.write(to: cacheURL(for: source), options: [.atomic, .completeFileProtection])
-    }
-
-    /// Only an allowlist of display-relevant NAS fields is ever written to
-    /// disk: no raw server error strings, accounts, paths, or credentials.
-    /// The configured origin (scheme+host+port) is stamped alongside so a
-    /// later address change — including a port-only change — can tell this
-    /// copy no longer belongs to the active NAS.
-    private static func sanitizedNASCopy(_ data: Data, origin: String) -> Data? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let report = object["report"] as? [String: Any],
-              let services = report["services"] as? [[String: Any]] else {
-            return nil
-        }
-        let allowedServiceKeys: Set<String> = ["service", "stale", "ok", "fetched_at"]
-        let allowedItemKeys: Set<String> = ["name", "window", "remaining_percent", "resets_at"]
-        let sanitizedServices = services.map { service -> [String: Any] in
-            var out: [String: Any] = [:]
-            for key in allowedServiceKeys {
-                if let value = service[key] { out[key] = value }
-            }
-            let items = (service["items"] as? [[String: Any]]) ?? []
-            out["items"] = items.map { item -> [String: Any] in
-                var sanitizedItem: [String: Any] = [:]
-                for key in allowedItemKeys {
-                    if let value = item[key] { sanitizedItem[key] = value }
-                }
-                // Only the two known credits fields are ever copied — never
-                // the whole nested dict, which could otherwise smuggle
-                // through auth tokens or other server-internal fields.
-                if let credits = item["credits"] as? [String: Any] {
-                    var sanitizedCredits: [String: Any] = [:]
-                    if let balance = credits["balance"] as? NSNumber, balance.doubleValue.isFinite, balance.doubleValue >= 0 {
-                        sanitizedCredits["balance"] = balance
-                    }
-                    if let unlimited = credits["unlimited"] as? Bool {
-                        sanitizedCredits["unlimited"] = unlimited
-                    }
-                    if !sanitizedCredits.isEmpty {
-                        sanitizedItem["credits"] = sanitizedCredits
-                    }
-                }
-                return sanitizedItem
-            }
-            return out
-        }
-        let sanitized: [String: Any] = [
-            "report": ["services": sanitizedServices],
-            "baseURLOrigin": origin
-        ]
-        return try? JSONSerialization.data(withJSONObject: sanitized)
+        guard source != .nas else { return }
+        try? data.write(to: cacheURL(for: source), options: [.atomic, .completeFileProtection])
     }
 
     /// Reads just the stamped origin from a previously sanitized NAS cache,
@@ -727,49 +738,22 @@ final class SnapshotStore: ObservableObject {
     }
 
     /// Like the Gemini online cache, only a copy stamped with the exact
-    /// currently configured NAS origin is ever reused. The NAS contract
-    /// sits under its own key so the strict parser sees exactly the
-    /// contract and nothing else.
+    /// currently configured NAS origin is ever reused; v1 and v2 copies are
+    /// each read back only by their own strict parser.
     private func loadCachedNASHistory() -> NASConsumptionHistory? {
-        guard let data = try? Data(contentsOf: nasHistoryCacheURL()),
-              data.count <= UsageSnapshot.nasHistoryMaxBytes + 1024,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["baseURLOrigin"] as? String == NASConfig.baseURL.absoluteString,
-              let history = object["history"] as? [String: Any] else {
-            return nil
-        }
-        return UsageSnapshot.parseNASConsumptionHistory(history)
+        guard let data = try? Data(contentsOf: nasHistoryCacheURL()) else { return nil }
+        return NASCacheCodec.decodeHistoryCache(data, origin: NASConfig.baseURL.absoluteString)
     }
 
-    /// Re-serializes only the validated contract fields — no raw response,
-    /// account, path, cookie, or error text is ever written.
     private func persistNASHistory(_ reading: NASConsumptionHistory) {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        func samples(_ points: [UsageConsumptionPoint]) -> [[String: Any]] {
-            points.map { ["at": formatter.string(from: $0.at), "amount": $0.amount] }
-        }
-        let history: [String: Any] = [
-            "schemaVersion": 1,
-            "source": "nas",
-            "intervalSeconds": UsageSnapshot.nasHistoryIntervalSeconds,
-            "slotCount": UsageSnapshot.nasHistoryMaxSamples,
-            "collectedAt": formatter.string(from: reading.collectedAt),
-            "codexUnit": reading.codexUsesCredits ? "credits" : "percent",
-            "consumptionHistory": [
-                "codex": samples(reading.codex),
-                "codexCredits": samples(reading.codexCredits),
-                "claude": samples(reading.claude),
-                "claudeFable": samples(reading.claudeFable),
-                "gemini": samples(reading.gemini)
-            ] as [String: Any]
-        ]
-        let sanitized: [String: Any] = [
-            "history": history,
-            "baseURLOrigin": NASConfig.baseURL.absoluteString
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: sanitized) else { return }
+        guard let data = NASCacheCodec.encodeHistoryCache(reading, origin: NASConfig.baseURL.absoluteString) else { return }
         try? data.write(to: nasHistoryCacheURL(), options: [.atomic, .completeFileProtection])
+    }
+
+    private enum NASHistoryIssue: Error {
+        case fetch(NASFetchError)
+        case unknownSchema
+        case invalid
     }
 
     /// Best-effort fetch of the NAS's own 5-minute consumption history,
@@ -778,18 +762,32 @@ final class SnapshotStore: ObservableObject {
     /// displayed snapshot and the last good cached history untouched.
     private func refreshNASHistory(generation myGeneration: Int) {
         Task {
-            let outcome: Result<NASConsumptionHistory, NASFetchError>
+            let outcome: Result<NASConsumptionHistory, NASHistoryIssue>
             do {
-                let data = try await nasHistoryClient.fetchStoredHistory()
-                if let reading = UsageSnapshot.parseNASConsumptionHistoryFile(data) {
-                    outcome = .success(reading)
+                // Only an HTTP 404 for the v2 file falls back to v1; a v2
+                // parse failure or any other HTTP/network error does not.
+                if let v2Data = try await nasHistoryClient.fetchStoredHistoryV2() {
+                    do {
+                        outcome = .success(try UsageSnapshot.decodeNASConsumptionHistoryV2(v2Data))
+                    } catch NASHistoryParseError.unknownSchema {
+                        outcome = .failure(.unknownSchema)
+                    } catch {
+                        outcome = .failure(.invalid)
+                    }
                 } else {
-                    outcome = .failure(.unreadableResponse)
+                    let data = try await nasHistoryClient.fetchStoredHistory()
+                    if let reading = UsageSnapshot.parseNASConsumptionHistoryFile(data) {
+                        outcome = .success(reading)
+                    } else {
+                        outcome = .failure(.invalid)
+                    }
                 }
+            } catch is CancellationError {
+                return
             } catch let error as NASFetchError {
-                outcome = .failure(error)
+                outcome = .failure(.fetch(error))
             } catch {
-                outcome = .failure(.network)
+                outcome = .failure(.fetch(.network))
             }
 
             guard myGeneration == generation, preferredSource == .nas, displayedSource == .nas else { return }
@@ -798,7 +796,9 @@ final class SnapshotStore: ObservableObject {
             case .success(let reading):
                 // A late or older copy must never replace a newer one that
                 // is already cached/displayed.
-                if let current = loadCachedNASHistory(), current.collectedAt >= reading.collectedAt {
+                if let current = loadCachedNASHistory(),
+                   current.schemaVersion == reading.schemaVersion,
+                   current.collectedAt >= reading.collectedAt {
                     nasHistoryIssue = nil
                     return
                 }
@@ -807,8 +807,12 @@ final class SnapshotStore: ObservableObject {
                     state = .loaded(snapshot.applyingNASHistory(reading))
                 }
                 nasHistoryIssue = nil
-            case .failure(let error):
+            case .failure(.fetch(let error)):
                 nasHistoryIssue = Self.nasHistoryIssueLabel(for: error)
+            case .failure(.unknownSchema):
+                nasHistoryIssue = "지원하지 않는 기록 형식"
+            case .failure(.invalid):
+                nasHistoryIssue = "잘못된 데이터"
             }
         }
     }
@@ -816,7 +820,7 @@ final class SnapshotStore: ObservableObject {
     /// A missing history file is the normal state until the NAS has taken
     /// its first readings, so it is not reported as a problem at all.
     private static func nasHistoryIssueLabel(for error: NASFetchError) -> String? {
-        if case .serverError(let message) = error, message.contains("404") { return nil }
+        if case .notFound = error { return nil }
         return geminiOnlineIssueLabel(for: error)
     }
 
@@ -824,9 +828,13 @@ final class SnapshotStore: ObservableObject {
         switch error {
         case .notAuthenticated:
             return "NAS 로그인 필요"
-        case .network, .timeout:
+        case .forbidden:
+            return "권한 없음"
+        case .rateLimited:
+            return "요청 제한"
+        case .network, .timeout, .serverUnavailable:
             return "네트워크 오류"
-        case .serverError(let message) where message.contains("404"):
+        case .notFound:
             return "Mac에서 NAS 저장 대기"
         case .serverError, .invalidAddress:
             return "읽기 실패"

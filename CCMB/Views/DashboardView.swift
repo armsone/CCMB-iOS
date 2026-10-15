@@ -11,7 +11,7 @@ struct DashboardView: View {
     let snapshot: UsageSnapshot
 
     private let columns = [GridItem(.adaptive(minimum: 250), spacing: 16)]
-    private let primaryServices: [Service] = [.codex, .claude, .gemini]
+    private let primaryServices: [Service] = [.codex, .claude, .gemini, .gemini2]
 
     var body: some View {
         ScrollView {
@@ -22,6 +22,9 @@ struct DashboardView: View {
                 }
                 if let nasError = store.nasConnectError {
                     banner(text: nasError, isWarning: true)
+                }
+                if store.displayedSource == .nas, let notice = store.nasRefreshNotice {
+                    banner(text: notice, isWarning: false)
                 }
                 if snapshot.isStale() {
                     banner(text: staleBannerText, isWarning: true)
@@ -41,7 +44,11 @@ struct DashboardView: View {
                     ForEach(primaryServices) { service in
                         if let usage = snapshot.services[service] {
                             NavigationLink {
-                                ServiceDetailView(usage: usage, isNAS: store.displayedSource == .nas)
+                                ServiceDetailView(
+                                    usage: usage,
+                                    isNAS: store.displayedSource == .nas,
+                                    isBusy: store.displayedSource == .nas && store.nasRefreshBusy
+                                )
                             } label: {
                                 ServiceCardView(usage: usage)
                             }
@@ -197,7 +204,13 @@ struct PassionSummaryCard: View {
             } else if showsNASHistory, let nasHistory = snapshot.nasHistory, !nasHistory.isEmpty {
                 // The Codex unit is the one the NAS measured each sample in,
                 // recorded with the history itself.
-                historyChart(nasHistory.history, codexUsesCredits: nasHistory.codexUsesCredits, emptyCaption: "기록 없음", perSampleLabel: "3분당")
+                historyChart(
+                    nasHistory.history,
+                    codexUsesCredits: nasHistory.codexUsesCredits,
+                    emptyCaption: "기록 없음",
+                    perSampleLabel: "3분당",
+                    gemini2Samples: nasHistory.gemini2
+                )
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     nasHistoryNote(nasHistory, now: context.date)
                 }
@@ -231,10 +244,19 @@ struct PassionSummaryCard: View {
         _ history: UsageConsumptionHistory,
         codexUsesCredits: Bool,
         emptyCaption: String?,
-        perSampleLabel: String
+        perSampleLabel: String,
+        gemini2Samples: [UsageConsumptionPoint]? = nil
     ) -> some View {
-        HStack(spacing: 0) {
-            ForEach(historyColumns(history, codexUsesCredits: codexUsesCredits, emptyCaption: emptyCaption, perSampleLabel: perSampleLabel)) { column in
+        let columns = historyColumns(
+            history,
+            codexUsesCredits: codexUsesCredits,
+            emptyCaption: emptyCaption,
+            perSampleLabel: perSampleLabel,
+            gemini2Samples: gemini2Samples
+        )
+        let lastService = columns.last?.service
+        return HStack(spacing: 0) {
+            ForEach(columns) { column in
                 VStack(spacing: 4) {
                     Text(column.caption)
                         .font(.system(size: 9, weight: .medium))
@@ -248,7 +270,7 @@ struct PassionSummaryCard: View {
                     .frame(height: 56)
                 }
                 .frame(maxWidth: .infinity)
-                if column.service != .gemini {
+                if column.service != lastService {
                     Divider().padding(.horizontal, 5)
                 }
             }
@@ -280,7 +302,8 @@ struct PassionSummaryCard: View {
         _ history: UsageConsumptionHistory,
         codexUsesCredits: Bool,
         emptyCaption: String?,
-        perSampleLabel: String
+        perSampleLabel: String,
+        gemini2Samples: [UsageConsumptionPoint]? = nil
     ) -> [ConsumptionHistoryColumn] {
         let codexSeries = codexUsesCredits
             ? [ConsumptionHistorySeries(label: "크레딧", samples: history.codex, color: .mint)]
@@ -292,11 +315,21 @@ struct PassionSummaryCard: View {
         let geminiSeries = [
             ConsumptionHistorySeries(label: "세션", samples: history.gemini, color: .blue)
         ]
-        return [
+        var columns = [
             ConsumptionHistoryColumn(service: .codex, caption: caption(for: codexSeries, unit: codexUsesCredits ? " cr" : "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: codexSeries),
             ConsumptionHistoryColumn(service: .claude, caption: caption(for: claudeSeries, unit: "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: claudeSeries),
             ConsumptionHistoryColumn(service: .gemini, caption: caption(for: geminiSeries, unit: "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: geminiSeries)
         ]
+        // gemini2 only ever comes from the v2 NAS history file; a v1-sourced
+        // reading (or none at all) simply omits this column rather than
+        // showing a fabricated empty one.
+        if let gemini2Samples, !gemini2Samples.isEmpty {
+            let gemini2Series = [ConsumptionHistorySeries(label: "세션", samples: gemini2Samples, color: CCMBTheme.serviceTint(.gemini2))]
+            columns.append(
+                ConsumptionHistoryColumn(service: .gemini2, caption: caption(for: gemini2Series, unit: "%", emptyCaption: emptyCaption, perSampleLabel: perSampleLabel), series: gemini2Series)
+            )
+        }
+        return columns
     }
 
     /// `emptyCaption` replaces the Mac menu's "0" placeholder where showing

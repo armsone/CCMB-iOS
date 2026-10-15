@@ -35,6 +35,8 @@ enum CCMBTheme {
             case "onlineWeekly": return Color(red: 0.16, green: 0.68, blue: 0.32)
             default: return Color(red: 0.20, green: 0.48, blue: 0.98)
             }
+        case .gemini2:
+            return Color(red: 0.42, green: 0.32, blue: 0.78)
         case .grok:
             return charcoal
         }

@@ -9,6 +9,8 @@ struct ServiceDetailView: View {
     /// iCloud/file snapshot; changes the Codex credit section's label and the
     /// footer's source explanation.
     var isNAS: Bool = false
+    /// The NAS is still collecting while these stored values are shown.
+    var isBusy: Bool = false
 
     private var isNASToken: Bool { isNAS && usage.service == .codex }
 
@@ -94,20 +96,46 @@ struct ServiceDetailView: View {
 
             Section("데이터 정보") {
                 LabeledContent("가져온 시각", value: CCMBFormat.relativeAge(usage.fetchedAt))
+                if let fetchedAt = usage.fetchedAt {
+                    LabeledContent("원본 조회 시각", value: CCMBFormat.resetTime(fetchedAt))
+                }
                 if let status = usage.status {
                     LabeledContent("상태", value: statusDescription(status))
+                }
+                if let reason = usage.errorReason {
+                    LabeledContent("사유", value: reason)
+                }
+                if usage.isLastKnown {
+                    Text("최신 조회가 실패해 이 계정의 마지막 정상값을 원본 조회 시각과 함께 표시합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if isBusy {
+                    Text("NAS가 지금 수집 중입니다. 끝나면 다음 새로 고침에 반영됩니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if isNAS {
+                    ForEach(usage.executionStatusLines, id: \.self) {
+                        Text($0)
+                    }
                 }
                 Text(sourceExplanation)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if usage.service == .gemini, isNAS {
+                if usage.service == .gemini || usage.service == .gemini2, isNAS {
                     Text("C세션/C주간은 NAS가 Gemini CLI에서 직접 조회한 값입니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if usage.service == .gemini2 {
+                    Text("Gemini 부계정은 본계정이 1% 이하로 부족할 때만 예비로 쓰이며, 카드의 계정 신원은 고정입니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
         }
-        .navigationTitle(usage.service.displayName)
+        .navigationTitle((isNAS && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName)
         .navigationBarTitleDisplayMode(.inline)
     }
 
