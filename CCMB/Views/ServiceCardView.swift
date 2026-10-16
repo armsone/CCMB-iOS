@@ -33,6 +33,14 @@ struct ServiceCardView: View {
         }
     }
 
+    private var sharedClaudeWeeklyReset: Date? {
+        guard usage.service == .claude,
+              let fable = usage.windows.first(where: { $0.id == "fableWeekly" })?.resetsAt,
+              let weekly = usage.windows.first(where: { $0.id == "weekly" })?.resetsAt,
+              fable == weekly else { return nil }
+        return weekly
+    }
+
     private var codexCreditMetricLabel: String {
         store.displayedSource == .nas ? "토큰" : "크레딧"
     }
@@ -46,21 +54,27 @@ struct ServiceCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: serviceSymbol)
                     .foregroundStyle(tint)
                     .accessibilityHidden(true)
-                Text((store.displayedSource == .nas && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName)
+                Text(usage.service.displayName)
                     .font(.headline)
                     .foregroundStyle(tint)
+                if let plan = usage.planTitle {
+                    Text(plan)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Spacer()
                 if isBusy {
                     tagText("갱신 중")
                 }
                 statusTag
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(refreshStatus(now: context.date))
+                    Text(CCMBFormat.relativeAge(usage.fetchedAt, now: context.date))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -69,8 +83,35 @@ struct ServiceCardView: View {
             }
 
             if usage.hasAnyData {
+                if let sharedReset = sharedClaudeWeeklyReset {
+                    Grid(horizontalSpacing: 8, verticalSpacing: 2) {
+                        GridRow {
+                            ForEach(displayedWindows) { window in
+                                CCMBRingGauge(
+                                    value: window.remainingPercent,
+                                    label: displayLabel(for: window),
+                                    unavailableLabel: visibleNoteText(for: window),
+                                    tint: CCMBTheme.serviceTint(usage.service, windowID: window.id),
+                                    animationTrigger: store.lastReadAt
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        GridRow {
+                            Text(CCMBFormat.resetTime(usage.windows.first(where: { $0.id == "fiveHour" })?.resetsAt))
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            Text(CCMBFormat.resetTime(sharedReset))
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                                .gridCellColumns(2)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    }
+                } else {
                 LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(displayedWindows) { window in
+                        VStack(spacing: 2) {
                         CCMBRingGauge(
                             value: window.remainingPercent,
                             label: displayLabel(for: window),
@@ -79,6 +120,10 @@ struct ServiceCardView: View {
                             tint: CCMBTheme.serviceTint(usage.service, windowID: window.id),
                             animationTrigger: store.lastReadAt
                         )
+                            Text(CCMBFormat.resetTime(window.resetsAt))
+                                .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                        }
                     }
                     if showsCodexCreditMetric {
                         CCMBCreditMetric(
@@ -96,6 +141,8 @@ struct ServiceCardView: View {
                             tint: tint
                         )
                     }
+                }
+
                 }
 
                 if usage.service != .codex,
@@ -126,20 +173,20 @@ struct ServiceCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if store.displayedSource == .nas {
-                ForEach(usage.executionStatusLines, id: \.self) { line in
-                    Text(line)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            if let accountLine {
+                Text(accountLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
 
+            resetMetaView
         }
-        .padding(16)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 18))
-        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 16))
+        .contentShape(RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
         .accessibilityHint("자세한 내용을 보려면 여세요.")
@@ -166,6 +213,60 @@ struct ServiceCardView: View {
             parts.append(reason)
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The NAS's actual `account_display` (display only: a trailing Gmail
+    /// domain is dropped, the stored value itself is untouched).
+    private var accountLine: String? {
+        guard usage.service != .codex, usage.service != .claude,
+              let display = usage.accountDisplay, !display.isEmpty else { return nil }
+        let stripped = display.hasSuffix("@gmail.com") ? String(display.dropLast("@gmail.com".count)) : display
+        return "계정 \(stripped)"
+    }
+
+    /// Codex's confirmed reset-voucher count/expiries and Claude's confirmed
+    /// limit-reset grant count/expiry, kept on one compact line.
+    @ViewBuilder
+    private var resetMetaView: some View {
+        switch usage.service {
+        case .codex:
+            if let count = usage.codexResetCreditsAvailable {
+                HStack {
+                    Text("초기화").foregroundStyle(.secondary)
+                    Text("\(count)개").fontWeight(.semibold).monospacedDigit().foregroundStyle(.tertiary)
+                    if !usage.codexResetCreditExpirations.isEmpty {
+                        Text(usage.codexResetCreditExpirations.sorted().map {
+                            CCMBFormat.resetTime($0)
+                        }.joined(separator: " · "))
+                            .font(.system(.caption2, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(.caption2)
+            }
+        case .claude:
+            if let count = usage.claudeLimitResetsCount {
+                HStack {
+                    Text("초기화").foregroundStyle(.secondary)
+                    Text("\(count)개").fontWeight(.semibold).monospacedDigit().foregroundStyle(.tertiary)
+                    if let expiresAt = usage.claudeLimitResetsExpiresAt {
+                        Text(CCMBFormat.resetTime(expiresAt))
+                            .font(.system(.caption2, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(.caption2)
+            }
+        default:
+            EmptyView()
+        }
     }
 
     private var serviceSymbol: String {
@@ -247,11 +348,6 @@ struct ServiceCardView: View {
         return nil
     }
 
-    private func refreshStatus(now: Date) -> String {
-        let remaining = max(0, store.nextAutomaticRefreshAt?.timeIntervalSince(now) ?? 0)
-        return "\(CCMBFormat.relativeAge(usage.fetchedAt, now: now)) · 다음 갱신 \(Int(ceil(remaining)))초"
-    }
-
     private var accessibilitySummary: String {
         let serviceName = (store.displayedSource == .nas && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName
         var parts = [serviceName]
@@ -282,6 +378,122 @@ struct ServiceCardView: View {
     }
 }
 
+/// Combines the NAS gemini(account1)/gemini2(account2) entries into a single
+/// first-page Gemini section: primary 세션/주간 then secondary 세션/주간, no
+/// Gemini AI-credit UI and no host/engine diagnostics. Primary plan title
+/// only; the secondary account never repeats it.
+struct GeminiCombinedCardView: View {
+    @EnvironmentObject private var store: SnapshotStore
+    @EnvironmentObject private var appearanceStore: AppearanceStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let primary: ServiceUsage
+    let secondary: ServiceUsage?
+
+    private var tint: Color { CCMBTheme.serviceTint(.gemini) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "diamond.fill")
+                    .foregroundStyle(tint)
+                    .accessibilityHidden(true)
+                Text("Gemini")
+                    .font(.headline)
+                    .foregroundStyle(tint)
+                if let planTitle = primary.planTitle {
+                    Text(planTitle)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(CCMBFormat.relativeAge(primary.fetchedAt, now: context.date))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let secondary {
+                if dynamicTypeSize.isAccessibilitySize {
+                    accountSection(label: "본계정", usage: primary)
+                    accountSection(label: "부계정", usage: secondary)
+                } else {
+                    HStack(alignment: .top, spacing: 8) {
+                        accountSection(label: "본계정", usage: primary)
+                            .frame(maxWidth: .infinity)
+                        accountSection(label: "부계정", usage: secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            } else {
+                accountSection(label: "본계정", usage: primary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func accountSection(label: String, usage: ServiceUsage) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if let account = accountName(usage) {
+                    Text(account)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(CCMBFormat.relativeAge(usage.fetchedAt, now: context.date))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if usage.isLastKnown || usage.stale || usage.status == "stale" || usage.errorReason != nil || usage.errorMessage != nil {
+                Text([usage.isLastKnown ? "마지막 정상값" : (usage.stale || usage.status == "stale" ? "오래된 값" : nil),
+                      usage.errorReason, usage.errorMessage].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if usage.hasAnyData {
+                HStack(spacing: 8) {
+                    ForEach(usage.windows) { window in
+                        VStack(spacing: 2) {
+                        CCMBRingGauge(
+                            value: window.remainingPercent,
+                            label: window.label,
+                            unavailableLabel: window.unavailabilityNote,
+                            tint: tint,
+                            animationTrigger: store.lastReadAt
+                        )
+                            Text(CCMBFormat.resetTime(window.resetsAt))
+                                .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                                .lineLimit(1).minimumScaleFactor(0.65)
+                        }
+                    }
+                }
+            } else {
+                Text("정보 없음")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func accountName(_ usage: ServiceUsage) -> String? {
+        guard let display = usage.accountDisplay, !display.isEmpty else { return nil }
+        return display.hasSuffix("@gmail.com") ? String(display.dropLast("@gmail.com".count)) : display
+    }
+}
+
 struct CCMBCreditMetric: View {
     let value: Double?
     var unlimited: Bool = false
@@ -294,9 +506,9 @@ struct CCMBCreditMetric: View {
     let tint: Color
 
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 4) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(tint.opacity(0.55), lineWidth: 2)
                 VStack(spacing: 1) {
                     Image(systemName: "creditcard.fill")
@@ -318,11 +530,11 @@ struct CCMBCreditMetric: View {
                     }
                 }
             }
-            .frame(width: 64, height: 64)
+            .frame(width: 48, height: 48)
 
             if showLabel {
                 Text(label)
-                    .font(.caption.weight(.semibold))
+                    .font(.caption2.weight(.semibold))
                     .lineLimit(1)
             }
         }
@@ -360,7 +572,7 @@ struct CCMBRingGauge: View {
     private var clampedValue: Double { min(100, max(0, value ?? 0)) }
 
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 4) {
             ZStack {
                 // Same gauge anatomy as the macOS ring: a uniform halo of
                 // radial ticks outside, a track and round-capped progress arc
@@ -370,36 +582,37 @@ struct CCMBRingGauge: View {
                 ForEach(0..<36, id: \.self) { index in
                     Capsule()
                         .fill(tint.opacity(0.45))
-                        .frame(width: 1, height: 3)
-                        .offset(y: -30.5)
+                        .frame(width: 1, height: 2)
+                        .offset(y: -22.5)
                         .rotationEffect(.degrees(Double(index) * 10))
                 }
                 Circle()
-                    .inset(by: 8)
-                    .stroke(tint.opacity(0.18), lineWidth: 7)
+                    .inset(by: 6)
+                    .stroke(tint.opacity(0.18), lineWidth: 5)
                 Circle()
-                    .inset(by: 8)
+                    .inset(by: 6)
                     .trim(from: 0, to: displayedValue / 100)
                     .stroke(
                         value == nil ? Color.secondary.opacity(0.35) : tint,
-                        style: StrokeStyle(lineWidth: 7, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round)
                     )
                     .rotationEffect(.degrees(90))
                     .scaleEffect(x: -1, y: 1)
                 Text(value == nil ? "—" : String(format: "%.0f", displayedValue))
-                    .font(.system(.body, design: .rounded).weight(.semibold))
+                    .font(.system(.caption, design: .rounded).weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.55)
                     .allowsTightening(true)
-                    .frame(width: 44)
+                    .frame(width: 32)
                     .monospacedDigit()
             }
-            .frame(width: 64, height: 64)
+            .frame(width: 48, height: 48)
 
             VStack(spacing: 1) {
                 if showLabel {
                     Text(label)
                         .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 }

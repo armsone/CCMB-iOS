@@ -159,6 +159,20 @@ struct ServiceUsage {
     /// because the latest NAS response for it failed with no items.
     var isLastKnown: Bool = false
     var nasHostStatus: NASHostStatus? = nil
+    /// NAS v2 `account_display` on this service entry (e.g. actual Codex/
+    /// Claude/Gemini account email); metadata only, never invalidates a
+    /// valid quota reading when absent.
+    var accountDisplay: String? = nil
+    /// Codex-only `codex_details` (confirmed app-server plan/reset voucher
+    /// metadata) carried on the weekly item.
+    var codexPlanType: String? = nil
+    var codexResetCreditsAvailable: Int? = nil
+    var codexResetCreditExpirations: [Date] = []
+    /// Claude-only `claude_details.plan_type`/`limit_resets` on the 전체
+    /// weekly item.
+    var claudePlanType: String? = nil
+    var claudeLimitResetsCount: Int? = nil
+    var claudeLimitResetsExpiresAt: Date? = nil
 
     var executionStatusLines: [String] {
         guard let nasHostStatus else { return [] }
@@ -507,8 +521,8 @@ struct UsageSnapshot {
                     unavailabilityNote: gemini?.double("weeklyRemainingPercent") == nil ? "미제공" : nil
                 )
             ],
-            creditBalance: gemini?.double("creditBalance"),
-            creditLabel: "AI 크레딧 잔액",
+            creditBalance: nil,
+            creditLabel: nil,
             monthlyUsedCredits: nil,
             account: nil,
             organizationName: nil,
@@ -718,7 +732,16 @@ extension UsageSnapshot {
         let balance = credits?.nonBoolDouble("balance").flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
         let unlimited = credits?.bool("unlimited") ?? false
         let error = serviceError(service)
-        return ServiceUsage(
+        // A malformed codex_details sub-field never invalidates the already
+        // healthy weekly quota/credit balance carried by the rest of the item.
+        let codexDetails = weekly?.object("codex_details")
+        let codexPlanType = codexDetails?.string("plan_type")
+        let codexResetCreditsAvailable = codexDetails?.nonBoolInt("reset_credits_available")
+        let codexResetCreditExpirations = (codexDetails?.raw["reset_credit_expirations"] as? [Any])?
+            .prefix(16)
+            .compactMap { JSONObject(raw: ["v": $0]).epochSecondsDate("v") }
+            .sorted() ?? []
+        var usage = ServiceUsage(
             service: .codex,
             status: nasStatus(service, hasData: hasData(windows, balance: balance, unlimited: unlimited)),
             windows: windows,
@@ -728,7 +751,14 @@ extension UsageSnapshot {
             monthlyUsedCredits: nil,
             account: nil,
             organizationName: nil,
-            planTitle: nil,
+            planTitle: codexPlanType.flatMap { [
+                "free": "ChatGPT Free", "go": "ChatGPT Go", "plus": "ChatGPT Plus",
+                "pro": "ChatGPT Pro", "prolite": "ChatGPT Pro Lite", "team": "ChatGPT Team",
+                "self_serve_business_usage_based": "ChatGPT Business · 사용량 기반",
+                "business": "ChatGPT Business", "ent26": "ChatGPT Enterprise",
+                "enterprise": "ChatGPT Enterprise",
+                "enterprise_cbp_usage_based": "ChatGPT Enterprise · 사용량 기반", "edu": "ChatGPT Edu"
+            ][$0.lowercased()] },
             model: nil,
             modelWeeklyLimits: [],
             fetchedAt: service?.epochSecondsDate("fetched_at"),
@@ -736,6 +766,11 @@ extension UsageSnapshot {
             errorMessage: error.message,
             stale: service?.bool("stale") == true
         )
+        usage.accountDisplay = service?.string("account_display")
+        usage.codexPlanType = codexPlanType
+        usage.codexResetCreditsAvailable = codexResetCreditsAvailable
+        usage.codexResetCreditExpirations = codexResetCreditExpirations
+        return usage
     }
 
     /// Card order matches the Mac-sourced parse: 5시간 세션 → Fable 주간 →
@@ -784,7 +819,9 @@ extension UsageSnapshot {
             )
         ]
         let error = serviceError(service)
-        return ServiceUsage(
+        let claudeDetails = weekly?.object("claude_details")
+        let limitResets = claudeDetails?.object("limit_resets")
+        var usage = ServiceUsage(
             service: .claude,
             status: nasStatus(service, hasData: hasData(windows)),
             windows: windows,
@@ -793,7 +830,10 @@ extension UsageSnapshot {
             monthlyUsedCredits: nil,
             account: nil,
             organizationName: nil,
-            planTitle: nil,
+            planTitle: claudeDetails?.string("plan_type").flatMap { [
+                "max_5x": "Claude Max 5×", "max_20x": "Claude Max 20×", "max": "Claude Max",
+                "pro": "Claude Pro", "team": "Claude Team", "enterprise": "Claude Enterprise"
+            ][$0.lowercased()] },
             model: nil,
             modelWeeklyLimits: modelWeeklyLimits,
             fetchedAt: service?.epochSecondsDate("fetched_at"),
@@ -801,6 +841,11 @@ extension UsageSnapshot {
             errorMessage: error.message,
             stale: service?.bool("stale") == true
         )
+        usage.accountDisplay = service?.string("account_display")
+        usage.claudePlanType = claudeDetails?.string("plan_type")
+        usage.claudeLimitResetsCount = limitResets?.nonBoolInt("remaining_count")
+        usage.claudeLimitResetsExpiresAt = limitResets?.epochSecondsDate("expires_at")
+        return usage
     }
 
     /// Only the "Gemini Models" pool is shown; the NAS's "Claude and GPT
@@ -832,31 +877,21 @@ extension UsageSnapshot {
             )
         ]
         let error = serviceError(service)
-        // Credits are only trusted when the service itself is usable (a live
-        // or stale-but-cached reading), matching the Codex credits rule — an
-        // erroring/unavailable entry never surfaces a stray balance. The
-        // entry is already the one matched to this exact identity
-        // (`gemini`/`gemini2`), so a balance can never be borrowed from the
-        // other account.
+        // Gemini AI credits are intentionally never shown in this app; only
+        // the plan title (metadata, never invalidates a valid quota) and the
+        // account identity are read from gemini_details/account_display.
         let usable = service?.bool("ok") == true || service?.bool("stale") == true
         let details = usable ? service?.object("gemini_details") : nil
-        // A confirmed `0` balance is real and shown as 0; `credits_status ==
-        // "unavailable"` or an absent field is nil, never guessed as 0.
-        // `credits_status` must be exactly "ok" before the balance is
-        // trusted, mirroring the Mac NASItemMappingCore.geminiSnapshot guard.
-        let creditBalance = details?.string("credits_status") == "ok"
-            ? details?.nonBoolInt("credit_balance").flatMap { $0 >= 0 ? Double($0) : nil }
-            : nil
-        return ServiceUsage(
+        var usage = ServiceUsage(
             service: identity,
             status: nasStatus(service, hasData: hasData(windows)),
             windows: windows,
-            creditBalance: creditBalance,
-            creditLabel: creditBalance != nil ? "AI 크레딧 잔액" : nil,
+            creditBalance: nil,
+            creditLabel: nil,
             monthlyUsedCredits: nil,
             account: nil,
             organizationName: nil,
-            planTitle: nil,
+            planTitle: details?.string("plan_title"),
             model: nil,
             modelWeeklyLimits: [],
             fetchedAt: service?.epochSecondsDate("fetched_at"),
@@ -864,6 +899,8 @@ extension UsageSnapshot {
             errorMessage: error.message,
             stale: service?.bool("stale") == true
         )
+        usage.accountDisplay = service?.string("account_display")
+        return usage
     }
 }
 

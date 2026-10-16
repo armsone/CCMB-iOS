@@ -11,11 +11,11 @@ struct DashboardView: View {
     let snapshot: UsageSnapshot
 
     private let columns = [GridItem(.adaptive(minimum: 250), spacing: 16)]
-    private let primaryServices: [Service] = [.codex, .claude, .gemini, .gemini2]
+    private let primaryServices: [Service] = [.codex, .claude]
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 header
                 if let problem = store.refreshProblem {
                     banner(text: problem, isWarning: true)
@@ -38,9 +38,7 @@ struct DashboardView: View {
                     banner(text: addressChangedText, isWarning: true)
                 }
 
-                AutomaticRefreshCard()
-
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(primaryServices) { service in
                         if let usage = snapshot.services[service] {
                             NavigationLink {
@@ -54,6 +52,15 @@ struct DashboardView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                    }
+                    if let gemini = snapshot.services[.gemini] {
+                        NavigationLink {
+                            ServiceDetailView(usage: gemini, isNAS: store.displayedSource == .nas,
+                                              isBusy: store.displayedSource == .nas && store.nasRefreshBusy)
+                        } label: {
+                            GeminiCombinedCardView(primary: gemini, secondary: snapshot.services[.gemini2])
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
 
@@ -77,43 +84,22 @@ struct DashboardView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Menu {
-                        ForEach(CCMBAppearance.allCases) { appearance in
-                            Button {
-                                appearanceStore.select(appearance)
-                            } label: {
-                                Label(
-                                    appearance.name,
-                                    systemImage: appearanceStore.selection == appearance ? "checkmark" : appearance.symbol
-                                )
-                            }
+                    ForEach(CCMBAppearance.allCases) { appearance in
+                        Button {
+                            appearanceStore.select(appearance)
+                        } label: {
+                            Label(
+                                appearance.name,
+                                systemImage: appearanceStore.selection == appearance ? "checkmark" : appearance.symbol
+                            )
                         }
-                    } label: {
-                        Label("테마와 앱 아이콘", systemImage: "paintpalette.fill")
-                    }
-                    Button {
-                        store.requestNASLogin()
-                    } label: {
-                        Label("NAS에서 불러오기", systemImage: "externaldrive.connected.to.line.below")
-                    }
-                    Menu {
-                        ForEach(SnapshotStore.automaticRefreshOptions, id: \.self) { seconds in
-                            Button {
-                                store.setAutomaticRefreshInterval(seconds)
-                            } label: {
-                                if store.automaticRefreshInterval == seconds {
-                                    Label(AutomaticRefreshCard.intervalLabel(seconds), systemImage: "checkmark")
-                                } else {
-                                    Text(AutomaticRefreshCard.intervalLabel(seconds))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("자동 새로 고침 · 최대 간격", systemImage: "timer")
                     }
                 } label: {
                     Label("메뉴", systemImage: "line.3.horizontal")
                 }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                CompactRefreshControl()
             }
         }
     }
@@ -224,9 +210,9 @@ struct PassionSummaryCard: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 16))
+        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("나의 AI 열정, 최근 갱신별 소비 기록")
     }
@@ -258,16 +244,11 @@ struct PassionSummaryCard: View {
         return HStack(spacing: 0) {
             ForEach(columns) { column in
                 VStack(spacing: 4) {
-                    Text(column.caption)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.65)
                     RefreshConsumptionBars(
                         series: column.series,
                         slotCount: history.slotCount
                     )
-                    .frame(height: 56)
+                    .frame(height: 70)
                 }
                 .frame(maxWidth: .infinity)
                 if column.service != lastService {
@@ -310,7 +291,7 @@ struct PassionSummaryCard: View {
             : [ConsumptionHistorySeries(label: "주간", samples: history.codex, color: .mint)]
         let claudeSeries = [
             ConsumptionHistorySeries(label: "주간", samples: history.claude, color: .orange),
-            ConsumptionHistorySeries(label: "Fable", samples: history.claudeFable, color: .red.opacity(0.7))
+            ConsumptionHistorySeries(label: "페블", samples: history.claudeFable, color: .red.opacity(0.7))
         ]
         let geminiSeries = [
             ConsumptionHistorySeries(label: "세션", samples: history.gemini, color: .blue)
@@ -430,56 +411,33 @@ private struct RefreshConsumptionBars: View {
     }
 }
 
-struct AutomaticRefreshCard: View {
+/// Compact header/toolbar replacement for the former full-width automatic
+/// refresh card: a manual refresh button plus the countdown as a small badge,
+/// so the first page's vertical budget goes to the service cards instead.
+struct CompactRefreshControl: View {
     @EnvironmentObject private var store: SnapshotStore
-    @EnvironmentObject private var appearanceStore: AppearanceStore
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            refreshBar(now: context.date)
+            refreshButton(now: context.date)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(appearanceStore.selection.card, in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityElement(children: .contain)
     }
 
-    private func refreshBar(now: Date) -> some View {
+    private func refreshButton(now: Date) -> some View {
         let remaining = max(0, store.nextAutomaticRefreshAt?.timeIntervalSince(now) ?? 0)
-        let progress = min(1, remaining / max(1, store.effectiveAutomaticRefreshInterval))
         return Button {
             store.refresh()
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                ProgressView(value: progress)
-                    .tint(CCMBTheme.signalRed)
-                    .accessibilityHidden(true)
                 Text("\(Int(ceil(remaining)))초")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .frame(minWidth: 42, alignment: .trailing)
-                Image(systemName: "display")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.green)
+                    .monospacedDigit()
+                    .frame(minWidth: 26, alignment: .trailing)
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("지금 새로 고침. 다음 자동 갱신까지 \(Int(ceil(remaining)))초. 항상 켜짐")
-    }
-
-    static func intervalLabel(_ seconds: TimeInterval) -> String {
-        switch seconds {
-        case SnapshotStore.adaptiveRefreshSentinel: return "자동 (적응형 30초~5분)"
-        case 30: return "30초"
-        case 60: return "1분"
-        case 120: return "2분"
-        case 300: return "5분"
-        case 600: return "10분"
-        default: return "\(Int(seconds))초"
-        }
+        .accessibilityLabel("지금 새로 고침. 다음 자동 갱신까지 \(Int(ceil(remaining)))초")
     }
 }

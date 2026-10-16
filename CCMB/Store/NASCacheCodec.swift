@@ -28,8 +28,8 @@ enum NASCacheCodec {
 
     // MARK: - Snapshot sanitizing
 
-    private static let serviceKeysV2 = ["service", "provider", "account_ref", "ok", "stale", "fetched_at"]
-    private static let serviceKeysLegacy = ["service", "ok", "stale", "fetched_at"]
+    private static let serviceKeysV2 = ["service", "provider", "account_ref", "ok", "stale", "fetched_at", "account_display"]
+    private static let serviceKeysLegacy = ["service", "ok", "stale", "fetched_at", "account_display"]
     private static let itemKeys = ["name", "window", "window_minutes", "remaining_percent", "resets_at"]
 
     /// The allowlisted copy of a NAS response: identity, freshness, the
@@ -100,6 +100,40 @@ enum NASCacheCodec {
                 }
                 if !safe.isEmpty { sanitized["credits"] = safe }
             }
+            // Codex/Claude reset-voucher metadata: only the known safe
+            // sub-fields, never the whole nested object.
+            if let details = item["codex_details"] as? [String: Any] {
+                var safe: [String: Any] = [:]
+                if let planType = details["plan_type"] as? String { safe["plan_type"] = planType }
+                if let resetCredits = details["reset_credits_available"] as? NSNumber,
+                   CFGetTypeID(resetCredits) != CFBooleanGetTypeID() {
+                    safe["reset_credits_available"] = resetCredits
+                }
+                if let expirations = details["reset_credit_expirations"] as? [Any] {
+                    safe["reset_credit_expirations"] = expirations.prefix(16).filter { value in
+                        guard let number = value as? NSNumber else { return false }
+                        return CFGetTypeID(number) != CFBooleanGetTypeID()
+                    }
+                }
+                if !safe.isEmpty { sanitized["codex_details"] = safe }
+            }
+            if let details = item["claude_details"] as? [String: Any] {
+                var safe: [String: Any] = [:]
+                if let planType = details["plan_type"] as? String { safe["plan_type"] = planType }
+                if let limitResets = details["limit_resets"] as? [String: Any] {
+                    var safeResets: [String: Any] = [:]
+                    if let count = limitResets["remaining_count"] as? NSNumber,
+                       CFGetTypeID(count) != CFBooleanGetTypeID() {
+                        safeResets["remaining_count"] = count
+                    }
+                    if let expiresAt = limitResets["expires_at"] as? NSNumber,
+                       CFGetTypeID(expiresAt) != CFBooleanGetTypeID() {
+                        safeResets["expires_at"] = expiresAt
+                    }
+                    if !safeResets.isEmpty { safe["limit_resets"] = safeResets }
+                }
+                if !safe.isEmpty { sanitized["claude_details"] = safe }
+            }
             return sanitized
         }
         // `gemini_details` (credit_balance/credits_fetched_at/credits_status)
@@ -119,6 +153,9 @@ enum NASCacheCodec {
             }
             if let status = details["credits_status"] as? String, ["ok", "unavailable"].contains(status) {
                 safe["credits_status"] = status
+            }
+            if let planTitle = details["plan_title"] as? String, planTitle.count <= 120 {
+                safe["plan_title"] = planTitle
             }
             if !safe.isEmpty { out["gemini_details"] = safe }
         }

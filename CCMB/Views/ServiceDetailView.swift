@@ -13,6 +13,7 @@ struct ServiceDetailView: View {
     var isBusy: Bool = false
 
     private var isNASToken: Bool { isNAS && usage.service == .codex }
+    private var showsAccount: Bool { usage.service != .codex && usage.service != .claude }
 
     var body: some View {
         List {
@@ -61,9 +62,9 @@ struct ServiceDetailView: View {
                 }
             }
 
-            if usage.account != nil || usage.organizationName != nil || usage.planTitle != nil || usage.model != nil {
-                Section("계정과 요금제") {
-                    if let account = usage.account {
+            if (showsAccount && usage.account != nil) || usage.organizationName != nil || usage.planTitle != nil || usage.model != nil {
+                Section(showsAccount ? "계정과 요금제" : "요금제") {
+                    if showsAccount, let account = usage.account {
                         LabeledContent("계정", value: account)
                     }
                     if let organization = usage.organizationName {
@@ -115,27 +116,47 @@ struct ServiceDetailView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                if isNAS {
-                    ForEach(usage.executionStatusLines, id: \.self) {
-                        Text($0)
-                    }
+                if showsAccount, let accountDisplay = usage.accountDisplay {
+                    LabeledContent("계정", value: accountDisplay)
                 }
                 Text(sourceExplanation)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if usage.service == .gemini || usage.service == .gemini2, isNAS {
-                    Text("C세션/C주간은 NAS가 Gemini CLI에서 직접 조회한 값입니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            }
+
+            if usage.codexResetCreditsAvailable != nil || !usage.codexResetCreditExpirations.isEmpty {
+                Section("초기화") {
+                    if let count = usage.codexResetCreditsAvailable {
+                        LabeledContent("개수", value: "\(count)개")
+                    }
+                    ForEach(Array(usage.codexResetCreditExpirations.enumerated()), id: \.offset) { _, date in
+                        HStack {
+                            Spacer()
+                            Text(CCMBFormat.resetTime(date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
                 }
-                if usage.service == .gemini2 {
-                    Text("Gemini 부계정은 본계정이 1% 이하로 부족할 때만 예비로 쓰이며, 카드의 계정 신원은 고정입니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            }
+
+            if usage.claudeLimitResetsCount != nil {
+                Section("초기화") {
+                    LabeledContent("개수", value: "\(usage.claudeLimitResetsCount ?? 0)")
+                    if let expiresAt = usage.claudeLimitResetsExpiresAt {
+                        HStack {
+                            Spacer()
+                            Text(CCMBFormat.resetTime(expiresAt))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
                 }
             }
         }
-        .navigationTitle((isNAS && usage.service == .gemini) ? "Gemini 본계정" : usage.service.displayName)
+        .navigationTitle(usage.service.displayName)
         .navigationBarTitleDisplayMode(.inline)
     }
 

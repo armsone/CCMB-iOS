@@ -240,6 +240,9 @@ final class SnapshotStore: ObservableObject {
     /// would otherwise mean "off" — this app has no "off" option.
     static let adaptiveRefreshSentinel: TimeInterval = -1
     static let automaticRefreshOptions: [TimeInterval] = [adaptiveRefreshSentinel, 30, 60, 120, 300, 600]
+    /// The NAS's own collection cadence; the user-facing automatic-refresh
+    /// interval picker only ever applied to the retired cloud/file sources.
+    static let nasAutomaticRefreshInterval: TimeInterval = 180
 
     var hasPickedFile: Bool {
         UserDefaults.standard.data(forKey: Self.bookmarkDefaultsKey) != nil
@@ -792,11 +795,21 @@ final class SnapshotStore: ObservableObject {
             nextAutomaticRefreshAt = nil
             return
         }
-        // Adaptive mode relaxes all the way to 300s; an explicit manual
-        // choice (including 60s) is instead an exact ceiling that idle
-        // relaxation never exceeds.
-        let ceiling = automaticRefreshInterval == Self.adaptiveRefreshSentinel ? 300 : automaticRefreshInterval
-        let interval = adaptivePolicy.interval(ceiling: ceiling)
+        // NAS is the only selectable source now; its foreground snapshot/
+        // history reads are fixed at the NAS's own 3-minute collection
+        // cadence, never the adaptive policy or a user-picked ceiling (those
+        // still exist on disk for the legacy cloud/file sources below, but
+        // are never read for NAS).
+        let interval: TimeInterval
+        if displayedSource == .nas {
+            interval = Self.nasAutomaticRefreshInterval
+        } else {
+            // Adaptive mode relaxes all the way to 300s; an explicit manual
+            // choice (including 60s) is instead an exact ceiling that idle
+            // relaxation never exceeds.
+            let ceiling = automaticRefreshInterval == Self.adaptiveRefreshSentinel ? 300 : automaticRefreshInterval
+            interval = adaptivePolicy.interval(ceiling: ceiling)
+        }
         effectiveAutomaticRefreshInterval = interval
         nextAutomaticRefreshAt = Date().addingTimeInterval(interval)
         // One-shot: each tick reschedules itself (via `noteAutomaticRefreshFinished`)
