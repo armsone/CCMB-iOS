@@ -102,6 +102,41 @@ enum NASCacheCodec {
             }
             return sanitized
         }
+        // `gemini_details` (credit_balance/credits_fetched_at/credits_status)
+        // and `refresh_policy` (mode/interval_seconds/next_refresh_at) are
+        // optional, service-level, non-secret metadata describing NAS's own
+        // upstream collection — never the client's independent cached-GET
+        // polling. Only the known safe sub-fields are copied through.
+        if let details = service["gemini_details"] as? [String: Any] {
+            var safe: [String: Any] = [:]
+            if let balance = details["credit_balance"] as? NSNumber,
+               CFGetTypeID(balance) != CFBooleanGetTypeID(), balance.doubleValue.isFinite, balance.doubleValue >= 0 {
+                safe["credit_balance"] = balance
+            }
+            if let fetchedAt = details["credits_fetched_at"] as? NSNumber,
+               CFGetTypeID(fetchedAt) != CFBooleanGetTypeID(), fetchedAt.doubleValue.isFinite, fetchedAt.doubleValue > 0 {
+                safe["credits_fetched_at"] = fetchedAt
+            }
+            if let status = details["credits_status"] as? String, ["ok", "unavailable"].contains(status) {
+                safe["credits_status"] = status
+            }
+            if !safe.isEmpty { out["gemini_details"] = safe }
+        }
+        if let policy = service["refresh_policy"] as? [String: Any] {
+            var safe: [String: Any] = [:]
+            if let mode = policy["mode"] as? String, ["active", "idle", "backoff"].contains(mode) {
+                safe["mode"] = mode
+            }
+            if let interval = policy["interval_seconds"] as? NSNumber,
+               CFGetTypeID(interval) != CFBooleanGetTypeID(), interval.doubleValue.isFinite, interval.doubleValue >= 0 {
+                safe["interval_seconds"] = interval
+            }
+            if let nextRefreshAt = policy["next_refresh_at"] as? NSNumber,
+               CFGetTypeID(nextRefreshAt) != CFBooleanGetTypeID(), nextRefreshAt.doubleValue.isFinite, nextRefreshAt.doubleValue > 0 {
+                safe["next_refresh_at"] = nextRefreshAt
+            }
+            if !safe.isEmpty { out["refresh_policy"] = safe }
+        }
         return out
     }
 

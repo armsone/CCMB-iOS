@@ -27,8 +27,14 @@ struct CCMBApp: App {
                     // while the app was in the background.
                     UIApplication.shared.isIdleTimerDisabled = phase == .active
                     if phase == .active {
+                        store.resumeAutomaticRefresh()
                         store.refresh(isAutomatic: true)
                         weatherStore.refresh()
+                    } else {
+                        // The automatic refresh timer only ever runs in the
+                        // foreground; background/inactive stops it instead
+                        // of letting it keep firing network requests.
+                        store.pauseAutomaticRefresh()
                     }
                 }
         }

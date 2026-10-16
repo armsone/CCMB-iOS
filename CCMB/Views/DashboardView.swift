@@ -109,7 +109,7 @@ struct DashboardView: View {
                             }
                         }
                     } label: {
-                        Label("자동 새로 고침 주기", systemImage: "timer")
+                        Label("자동 새로 고침 · 최대 간격", systemImage: "timer")
                     }
                 } label: {
                     Label("메뉴", systemImage: "line.3.horizontal")
@@ -446,7 +446,7 @@ struct AutomaticRefreshCard: View {
 
     private func refreshBar(now: Date) -> some View {
         let remaining = max(0, store.nextAutomaticRefreshAt?.timeIntervalSince(now) ?? 0)
-        let progress = min(1, remaining / store.automaticRefreshInterval)
+        let progress = min(1, remaining / max(1, store.effectiveAutomaticRefreshInterval))
         return Button {
             store.refresh()
         } label: {
@@ -473,6 +473,7 @@ struct AutomaticRefreshCard: View {
 
     static func intervalLabel(_ seconds: TimeInterval) -> String {
         switch seconds {
+        case SnapshotStore.adaptiveRefreshSentinel: return "자동 (적응형 30초~5분)"
         case 30: return "30초"
         case 60: return "1분"
         case 120: return "2분"

@@ -1,6 +1,90 @@
 import Foundation
 import SwiftUI
 
+/// Bounded adaptive cadence for the automatic NAS refresh, mirroring the
+/// Mac app's `SmartRefreshPolicy`: a meaningful usage/account/reset change
+/// snaps back to 30s; repeated unchanged reads relax to 120s, then 300s.
+/// The caller's chosen `automaticRefreshInterval` acts only as a ceiling —
+/// it is never exceeded, but idle relaxation never goes past 300s either.
+/// Only meaningful values (percentages, credit balances, account identity,
+/// reset timestamps) may be passed to `update(values:)`; a poll/fetch clock
+/// would always differ and would pin the policy to `active` forever.
+private struct AdaptiveRefreshPolicy {
+    enum Mode: Equatable {
+        case active, idleShort, idleMedium
+
+        var interval: TimeInterval {
+            switch self {
+            case .active: return 30
+            case .idleShort: return 120
+            case .idleMedium: return 300
+            }
+        }
+
+        var unchangedThreshold: Int? {
+            switch self {
+            case .active: return 3
+            case .idleShort: return 6
+            case .idleMedium: return nil
+            }
+        }
+
+        var next: Mode {
+            switch self {
+            case .active: return .idleShort
+            case .idleShort, .idleMedium: return .idleMedium
+            }
+        }
+    }
+
+    private(set) var mode: Mode = .active
+    private var unchangedCount = 0
+    private var lastValues: [Double?]?
+    /// Exact-equality identity tokens (account id/email, reset timestamp as
+    /// an unambiguous string), tracked separately from `lastValues` so no
+    /// hashing or numeric folding is involved — `hashValue` is per-process
+    /// and can collide, so it must never stand in for identity comparison.
+    private var lastIdentityTokens: [String?]?
+
+    mutating func update(values: [Double?], identityTokens: [String?] = []) {
+        guard let previousValues = lastValues, let previousIdentityTokens = lastIdentityTokens else {
+            lastValues = values
+            lastIdentityTokens = identityTokens
+            return
+        }
+        let valuesChanged = values.count != previousValues.count || zip(values, previousValues).contains { current, old in
+            switch (current, old) {
+            case let (current?, old?): return abs(current - old) > 0.01
+            case (nil, nil): return false
+            default: return true
+            }
+        }
+        let identityChanged = identityTokens != previousIdentityTokens
+        lastValues = values
+        lastIdentityTokens = identityTokens
+        if valuesChanged || identityChanged {
+            mode = .active
+            unchangedCount = 0
+            return
+        }
+        unchangedCount += 1
+        guard let threshold = mode.unchangedThreshold, unchangedCount >= threshold else { return }
+        mode = mode.next
+        unchangedCount = 0
+    }
+
+    func interval(ceiling: TimeInterval) -> TimeInterval {
+        min(mode.interval, max(30, ceiling))
+    }
+
+    /// Formats a reset timestamp as an exact, unambiguous identity token
+    /// (epoch seconds). Never pass a poll/fetch timestamp here — only a
+    /// confirmed upstream reset instant.
+    static func identityToken(_ date: Date?) -> String? {
+        date.map { String($0.timeIntervalSince1970) }
+    }
+}
+
 /// Owns everything the screens read: the current snapshot, where it came
 /// from, and the user-visible load state. The primary path is the Mac's
 /// CloudKit upload in the user's own private database; picking a copied
@@ -58,6 +142,11 @@ final class SnapshotStore: ObservableObject {
     /// Last time a CloudKit fetch brought data back, this run.
     @Published private(set) var lastCloudSyncAt: Date?
     @Published private(set) var automaticRefreshInterval: TimeInterval = 60
+    /// The interval actually scheduled for the next automatic tick, which
+    /// can be shorter than `automaticRefreshInterval` (recent activity) or
+    /// anywhere up to it (idle relaxation, capped at 300s). Views computing
+    /// a countdown progress bar must use this, not `automaticRefreshInterval`.
+    @Published private(set) var effectiveAutomaticRefreshInterval: TimeInterval = 60
     @Published private(set) var nextAutomaticRefreshAt: Date?
     @Published private(set) var codexCreditsSpentLast30Minutes: Double?
     /// A refresh problem that should not hide the still-usable snapshot:
@@ -100,6 +189,11 @@ final class SnapshotStore: ObservableObject {
     /// server's `retry_after_seconds`.
     private var nasRefreshNotBefore: TimeInterval?
     private var automaticRefreshTimer: Timer?
+    /// Automatic refresh only ever runs while the scene is in the
+    /// foreground; `CCMBApp` toggles this on `scenePhase` changes so a
+    /// backgrounded app never keeps firing network requests on a timer.
+    private var isSceneActive = true
+    private var adaptivePolicy = AdaptiveRefreshPolicy()
     private var didLoadOnLaunch = false
     /// Bumped on every explicit user source selection (loading from iCloud,
     /// picking a file, connecting to or re-connecting the NAS, changing the
@@ -115,6 +209,13 @@ final class SnapshotStore: ObservableObject {
     private static let sourceNameDefaultsKey = "pickedSnapshotFileNameV1"
     private static let preferredSourceDefaultsKey = "preferredSnapshotSourceV1"
     private static let automaticRefreshDefaultsKey = "automaticRefreshIntervalSecondsV1"
+    /// Set once this one-time migration has run (or the user has explicitly
+    /// picked a cadence since it shipped); never reset afterwards.
+    private static let adaptiveMigrationDoneDefaultsKey = "automaticRefreshAdaptiveMigrationV1"
+    /// The numeric cadence saved before this migration, kept so a future
+    /// manual re-selection still has the user's old choice to fall back to;
+    /// it is never read as a ceiling on adaptive mode.
+    private static let legacyManualIntervalDefaultsKey = "legacyManualRefreshIntervalSecondsV1"
     private static let codexCreditHistoryDefaultsKey = "codexCreditHistoryV1"
 
     private struct CreditSample: Codable {
@@ -122,7 +223,11 @@ final class SnapshotStore: ObservableObject {
         let balance: Double
     }
 
-    static let automaticRefreshOptions: [TimeInterval] = [30, 60, 120, 300, 600]
+    /// Sentinel for "adaptive": relax automatically between 30s and 300s
+    /// instead of a fixed manual ceiling. Never confused with `0`, which
+    /// would otherwise mean "off" — this app has no "off" option.
+    static let adaptiveRefreshSentinel: TimeInterval = -1
+    static let automaticRefreshOptions: [TimeInterval] = [adaptiveRefreshSentinel, 30, 60, 120, 300, 600]
 
     var hasPickedFile: Bool {
         UserDefaults.standard.data(forKey: Self.bookmarkDefaultsKey) != nil
@@ -149,8 +254,29 @@ final class SnapshotStore: ObservableObject {
         // must no longer cause a cloud/file fetch on startup.
         preferredSource = .nas
         displayedSource = preferredSource
-        let savedInterval = UserDefaults.standard.double(forKey: Self.automaticRefreshDefaultsKey)
-        automaticRefreshInterval = Self.automaticRefreshOptions.contains(savedInterval) ? savedInterval : 60
+        // `setAutomaticRefreshInterval` is the only other writer of
+        // `automaticRefreshDefaultsKey`. Its absence means a fresh install,
+        // which starts on adaptive. An existing numeric save from before
+        // this migration shipped is moved to adaptive exactly once — the
+        // user explicitly requested idle-slow/active-fast by default for
+        // everyone — but the old number is preserved separately and never
+        // re-migrated once this has run or the user has chosen a cadence
+        // since.
+        if UserDefaults.standard.object(forKey: Self.automaticRefreshDefaultsKey) == nil {
+            automaticRefreshInterval = Self.adaptiveRefreshSentinel
+            UserDefaults.standard.set(true, forKey: Self.adaptiveMigrationDoneDefaultsKey)
+        } else if UserDefaults.standard.bool(forKey: Self.adaptiveMigrationDoneDefaultsKey) == false {
+            let savedInterval = UserDefaults.standard.double(forKey: Self.automaticRefreshDefaultsKey)
+            if Self.automaticRefreshOptions.contains(savedInterval), savedInterval != Self.adaptiveRefreshSentinel {
+                UserDefaults.standard.set(savedInterval, forKey: Self.legacyManualIntervalDefaultsKey)
+            }
+            automaticRefreshInterval = Self.adaptiveRefreshSentinel
+            UserDefaults.standard.set(Self.adaptiveRefreshSentinel, forKey: Self.automaticRefreshDefaultsKey)
+            UserDefaults.standard.set(true, forKey: Self.adaptiveMigrationDoneDefaultsKey)
+        } else {
+            let savedInterval = UserDefaults.standard.double(forKey: Self.automaticRefreshDefaultsKey)
+            automaticRefreshInterval = Self.automaticRefreshOptions.contains(savedInterval) ? savedInterval : Self.adaptiveRefreshSentinel
+        }
         updateCodexCreditSpend()
         scheduleAutomaticRefresh()
         sourceFileName = UserDefaults.standard.string(forKey: Self.sourceNameDefaultsKey)
@@ -180,6 +306,8 @@ final class SnapshotStore: ObservableObject {
         guard Self.automaticRefreshOptions.contains(seconds) else { return }
         automaticRefreshInterval = seconds
         UserDefaults.standard.set(seconds, forKey: Self.automaticRefreshDefaultsKey)
+        UserDefaults.standard.set(true, forKey: Self.adaptiveMigrationDoneDefaultsKey)
+        adaptivePolicy = AdaptiveRefreshPolicy()
         scheduleAutomaticRefresh()
     }
 
@@ -261,6 +389,9 @@ final class SnapshotStore: ObservableObject {
             lastReadAt = Date()
             lastCloudSyncAt = Date()
             refreshProblem = nil
+            // One-shot timer: this tick's owner re-arms the next one here,
+            // mirroring the NAS path's `noteAutomaticRefreshFinished`.
+            if isAutomatic { scheduleAutomaticRefresh() }
         } catch {
             guard myGeneration == generation, preferredSource == .cloud else { return }
             let message = (error as? CloudFetchError)?.errorDescription
@@ -277,6 +408,9 @@ final class SnapshotStore: ObservableObject {
             default:
                 state = .failed(message: message)
             }
+            // A transient failure never accelerates the cadence: only the
+            // timer is rescheduled here, never `adaptivePolicy`.
+            if isAutomatic { scheduleAutomaticRefresh() }
         }
     }
 
@@ -314,6 +448,10 @@ final class SnapshotStore: ObservableObject {
             if !isLaunch {
                 refreshProblem = "파일을 다시 선택해 주세요. 이전에 선택한 파일 기록이 없습니다."
             }
+            // One-shot timer: this tick's owner re-arms the next one on
+            // every exit, including this early return, or an automatic
+            // refresh of a bookmark-less file source would never tick again.
+            if isLaunch { scheduleAutomaticRefresh() }
             return
         }
 
@@ -325,6 +463,7 @@ final class SnapshotStore: ObservableObject {
             bookmarkDataIsStale: &isStale
         ) else {
             refreshProblem = "파일을 다시 선택해 주세요. 이전에 선택한 파일에 더 이상 접근할 수 없습니다."
+            if isLaunch { scheduleAutomaticRefresh() }
             return
         }
 
@@ -342,6 +481,7 @@ final class SnapshotStore: ObservableObject {
             origin = .pickedFile
             displayedSource = .file
             lastReadAt = Date()
+            if isLaunch { scheduleAutomaticRefresh() }
         } catch {
             // On launch a missing/renamed file is normal (iCloud eviction,
             // Mac-side rewrite); keep the saved copy quiet until the user
@@ -352,6 +492,7 @@ final class SnapshotStore: ObservableObject {
             } else if !isLaunch {
                 fail(with: error)
             }
+            if isLaunch { scheduleAutomaticRefresh() }
         }
     }
 
@@ -432,6 +573,7 @@ final class SnapshotStore: ObservableObject {
                 lastReadAt = Date()
                 refreshProblem = nil
                 codexCreditsSpentLast30Minutes = nil
+                updateAdaptivePolicy(from: prepared.snapshot)
                 scheduleAutomaticRefresh()
                 // Gemini 온라인 별도 수집은 중단한다.
                 refreshNASHistory(generation: myGeneration)
@@ -513,6 +655,11 @@ final class SnapshotStore: ObservableObject {
             refreshProblem = nil
             // Gemini 온라인 별도 수집은 중단한다.
             refreshNASHistory(generation: myGeneration)
+            if isAutomatic {
+                noteAutomaticRefreshFinished(snapshot: prepared.snapshot)
+            } else {
+                updateAdaptivePolicy(from: prepared.snapshot)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -536,6 +683,11 @@ final class SnapshotStore: ObservableObject {
             // does, so it can never pop the sheet up unprompted.
             if !isAutomatic, let fetchError = error as? NASFetchError, case .notAuthenticated = fetchError {
                 isNASLoginPresented = true
+            }
+            // A transient failure must never accelerate the cadence: only
+            // the timer is rescheduled here, never `adaptivePolicy`.
+            if isAutomatic {
+                scheduleAutomaticRefresh()
             }
         }
     }
@@ -576,19 +728,84 @@ final class SnapshotStore: ObservableObject {
         UserDefaults.standard.set(source.rawValue, forKey: Self.preferredSourceDefaultsKey)
     }
 
+    /// Flat, meaningful-only values and identity tokens for the NAS
+    /// snapshot's four live services: remaining percentages and credit
+    /// balances as numeric values; account identity and each primary
+    /// window's reset time as exact-equality identity tokens (never hashed
+    /// into the numeric values). Never includes `fetchedAt` or any other
+    /// poll-time clock, which would always differ and would pin the
+    /// adaptive policy to `active` forever.
+    private func activityValues(from snapshot: UsageSnapshot) -> (values: [Double?], identityTokens: [String?]) {
+        var values: [Double?] = []
+        var identityTokens: [String?] = []
+        for service in [Service.codex, .claude, .gemini, .gemini2] {
+            guard let usage = snapshot.services[service] else { continue }
+            values += usage.windows.map(\.remainingPercent)
+            values.append(usage.creditBalance)
+            identityTokens.append(usage.account)
+            identityTokens.append(AdaptiveRefreshPolicy.identityToken(usage.primaryWindow?.resetsAt))
+        }
+        return (values, identityTokens)
+    }
+
+    private func updateAdaptivePolicy(from snapshot: UsageSnapshot) {
+        let activity = activityValues(from: snapshot)
+        adaptivePolicy.update(values: activity.values, identityTokens: activity.identityTokens)
+    }
+
+    /// Called from `CCMBApp` on `scenePhase` becoming `.background`/
+    /// `.inactive`: stops the automatic timer so a backgrounded app never
+    /// keeps polling the NAS.
+    func pauseAutomaticRefresh() {
+        isSceneActive = false
+        automaticRefreshTimer?.invalidate()
+        automaticRefreshTimer = nil
+    }
+
+    /// Called from `CCMBApp` on `scenePhase` becoming `.active`. The caller
+    /// still performs its own immediate `refresh(isAutomatic: true)`; this
+    /// only resumes the countdown timer for the ticks after that.
+    func resumeAutomaticRefresh() {
+        isSceneActive = true
+        scheduleAutomaticRefresh()
+    }
+
     private func scheduleAutomaticRefresh() {
         automaticRefreshTimer?.invalidate()
-        nextAutomaticRefreshAt = Date().addingTimeInterval(automaticRefreshInterval)
-        let timer = Timer(timeInterval: automaticRefreshInterval, repeats: true) { [weak self] _ in
+        automaticRefreshTimer = nil
+        guard isSceneActive else {
+            nextAutomaticRefreshAt = nil
+            return
+        }
+        // Adaptive mode relaxes all the way to 300s; an explicit manual
+        // choice (including 60s) is instead an exact ceiling that idle
+        // relaxation never exceeds.
+        let ceiling = automaticRefreshInterval == Self.adaptiveRefreshSentinel ? 300 : automaticRefreshInterval
+        let interval = adaptivePolicy.interval(ceiling: ceiling)
+        effectiveAutomaticRefreshInterval = interval
+        nextAutomaticRefreshAt = Date().addingTimeInterval(interval)
+        // One-shot: each tick reschedules itself (via `noteAutomaticRefreshFinished`)
+        // once that tick's fetch actually completes, so the next interval always
+        // reflects the latest known activity instead of a stale repeating cadence.
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                self.nextAutomaticRefreshAt = Date().addingTimeInterval(self.automaticRefreshInterval)
-                self.refresh(isAutomatic: true)
+                self?.refresh(isAutomatic: true)
             }
         }
-        timer.tolerance = min(5, automaticRefreshInterval * 0.1)
+        timer.tolerance = min(5, interval * 0.1)
         RunLoop.main.add(timer, forMode: .common)
         automaticRefreshTimer = timer
+    }
+
+    /// Ends one automatic refresh tick: feeds a successful snapshot's
+    /// meaningful values into the adaptive policy (a failure never does,
+    /// so a transient error can never accelerate the cadence), then
+    /// reschedules the next one-shot tick.
+    private func noteAutomaticRefreshFinished(snapshot: UsageSnapshot?) {
+        if let snapshot {
+            updateAdaptivePolicy(from: snapshot)
+        }
+        scheduleAutomaticRefresh()
     }
 
     private func readData(from url: URL) throws -> Data {

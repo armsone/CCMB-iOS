@@ -832,12 +832,27 @@ extension UsageSnapshot {
             )
         ]
         let error = serviceError(service)
+        // Credits are only trusted when the service itself is usable (a live
+        // or stale-but-cached reading), matching the Codex credits rule — an
+        // erroring/unavailable entry never surfaces a stray balance. The
+        // entry is already the one matched to this exact identity
+        // (`gemini`/`gemini2`), so a balance can never be borrowed from the
+        // other account.
+        let usable = service?.bool("ok") == true || service?.bool("stale") == true
+        let details = usable ? service?.object("gemini_details") : nil
+        // A confirmed `0` balance is real and shown as 0; `credits_status ==
+        // "unavailable"` or an absent field is nil, never guessed as 0.
+        // `credits_status` must be exactly "ok" before the balance is
+        // trusted, mirroring the Mac NASItemMappingCore.geminiSnapshot guard.
+        let creditBalance = details?.string("credits_status") == "ok"
+            ? details?.nonBoolInt("credit_balance").flatMap { $0 >= 0 ? Double($0) : nil }
+            : nil
         return ServiceUsage(
             service: identity,
             status: nasStatus(service, hasData: hasData(windows)),
             windows: windows,
-            creditBalance: nil,
-            creditLabel: nil,
+            creditBalance: creditBalance,
+            creditLabel: creditBalance != nil ? "AI 크레딧 잔액" : nil,
             monthlyUsedCredits: nil,
             account: nil,
             organizationName: nil,
