@@ -513,7 +513,7 @@ struct AccountCardView: View {
 }
 
 /// 서비스 아이콘(약 36pt 둥근 사각형): Codex 짙은 남색 + 청록 `>_`, Claude 산호색 + 흰 방사형,
-/// Gemini 계정색 + 흰 G. 이미지 자산 없이 SwiftUI 도형으로 그린다.
+/// Gemini 흰 바탕 + 제공받은 원본 다색 별 로고(계정색은 테두리). Codex·Claude는 SwiftUI 도형으로 그린다.
 struct AccountIconView: View {
     let service: Service
     let accent: Color
@@ -526,11 +526,23 @@ struct AccountIconView: View {
             glyph
         }
         .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
+        .overlay {
+            if isGemini {
+                RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                    .strokeBorder(accent, lineWidth: 1.5)
+            }
+        }
         .accessibilityHidden(true)
     }
 
+    private var isGemini: Bool {
+        service != .codex && service != .claude
+    }
+
     private var fill: Color {
-        service == .codex ? CCMBDash.codexIcon : accent
+        if isGemini { return .white }
+        return service == .codex ? CCMBDash.codexIcon : accent
     }
 
     @ViewBuilder
@@ -567,9 +579,9 @@ struct AccountIconView: View {
                 }
             }
         default:
-            Text("G")
-                .font(.system(size: size * 0.62, weight: .heavy))
-                .foregroundStyle(.white)
+            Image("GeminiLogo")
+                .resizable()
+                .scaledToFit()
         }
     }
 }
