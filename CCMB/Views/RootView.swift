@@ -4,7 +4,6 @@ import SwiftUI
 /// 정상 대시보드, 읽기 실패.
 struct RootView: View {
     @EnvironmentObject private var store: SnapshotStore
-    @EnvironmentObject private var weatherStore: WeatherStore
     @EnvironmentObject private var appearanceStore: AppearanceStore
 
     var body: some View {
@@ -13,21 +12,6 @@ struct RootView: View {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        if let weather = weatherStore.reading {
-                            ZStack {
-                                Image(systemName: weather.symbolName)
-                                    .foregroundStyle(.orange)
-                                    .offset(x: -18)
-                                Text("\(Int(weather.temperature.rounded()))°")
-                                    .font(.subheadline.weight(.semibold))
-                                    .monospacedDigit()
-                                    .offset(x: 18)
-                            }
-                            .frame(width: 72, height: 32)
-                            .accessibilityElement(children: .combine)
-                        }
-                    }
                     ToolbarItem(placement: .principal) {
                         Text("CCMB")
                             .font(.headline)

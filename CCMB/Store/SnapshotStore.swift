@@ -753,7 +753,7 @@ final class SnapshotStore: ObservableObject {
     private func activityValues(from snapshot: UsageSnapshot) -> (values: [Double?], identityTokens: [String?]) {
         var values: [Double?] = []
         var identityTokens: [String?] = []
-        for service in [Service.codex, .claude, .gemini, .gemini2] {
+        for service in [Service.codex, .claude, .gemini, .gemini2, .gemini3] {
             guard let usage = snapshot.services[service] else { continue }
             values += usage.windows.map(\.remainingPercent)
             values.append(usage.creditBalance)
@@ -1009,9 +1009,18 @@ final class SnapshotStore: ObservableObject {
         Task {
             let outcome: Result<NASConsumptionHistory, NASHistoryIssue>
             do {
-                // Only an HTTP 404 for the v2 file falls back to v1; a v2
-                // parse failure or any other HTTP/network error does not.
-                if let v2Data = try await nasHistoryClient.fetchStoredHistoryV2() {
+                // The 24-hour v3 file is preferred. Only an HTTP 404 falls back
+                // (v3 → v2 → v1); a parse failure or any other HTTP/network
+                // error does not.
+                if let v3Data = try await nasHistoryClient.fetchStoredHistoryV3() {
+                    do {
+                        outcome = .success(try UsageSnapshot.decodeNASConsumptionHistoryV3(v3Data))
+                    } catch NASHistoryParseError.unknownSchema {
+                        outcome = .failure(.unknownSchema)
+                    } catch {
+                        outcome = .failure(.invalid)
+                    }
+                } else if let v2Data = try await nasHistoryClient.fetchStoredHistoryV2() {
                     do {
                         outcome = .success(try UsageSnapshot.decodeNASConsumptionHistoryV2(v2Data))
                     } catch NASHistoryParseError.unknownSchema {
@@ -1040,10 +1049,12 @@ final class SnapshotStore: ObservableObject {
             switch outcome {
             case .success(let reading):
                 // A late or older copy must never replace a newer one that
-                // is already cached/displayed.
+                // is already cached/displayed, unless the server re-exported
+                // the same timestamp with a larger 24h point window.
                 if let current = loadCachedNASHistory(),
                    current.schemaVersion == reading.schemaVersion,
-                   current.collectedAt >= reading.collectedAt {
+                   current.collectedAt > reading.collectedAt
+                       || (current.collectedAt == reading.collectedAt && current.totalPointCount >= reading.totalPointCount) {
                     nasHistoryIssue = nil
                     return
                 }

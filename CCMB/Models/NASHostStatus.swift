@@ -169,7 +169,7 @@ public struct NASHostStatus: Equatable, Sendable {
             var executionAccount: String? = nil
             if let a = rawHost["execution_account"], !(a is NSNull) {
                 guard let aStr = a as? String,
-                      (aStr == "account1" || aStr == "account2") else {
+                      (aStr == "account1" || aStr == "account2" || aStr == "account3") else {
                     continue
                 }
                 executionAccount = aStr
@@ -287,8 +287,8 @@ public struct NASHostStatus: Equatable, Sendable {
 
     private static func isAccountMatch(_ accountValue: String?, target: String) -> Bool {
         guard let accountValue,
-              (accountValue == "account1" || accountValue == "account2"),
-              (target == "account1" || target == "account2") else {
+              (accountValue == "account1" || accountValue == "account2" || accountValue == "account3"),
+              (target == "account1" || target == "account2" || target == "account3") else {
             return false
         }
         return accountValue == target
@@ -296,8 +296,8 @@ public struct NASHostStatus: Equatable, Sendable {
 
     private static func isOppositeAccount(_ accountValue: String?, current: String) -> Bool {
         guard let accountValue,
-              (accountValue == "account1" || accountValue == "account2"),
-              (current == "account1" || current == "account2") else {
+              (accountValue == "account1" || accountValue == "account2" || accountValue == "account3"),
+              (current == "account1" || current == "account2" || current == "account3") else {
             return false
         }
         return accountValue != current
@@ -338,9 +338,15 @@ public struct NASHostStatus: Equatable, Sendable {
             lines.append(desc)
         }
 
-        // For opposite account running, allow '부계정 실행중' or '주계정 실행중'
+        // For opposite account running, label which account is running
         for h in oppositeRunningHosts {
-            let acctLabel = (accountRef == "account1") ? "부계정 실행중" : "주계정 실행중"
+            let acctLabel: String
+            switch h.executionAccount {
+            case "account1": acctLabel = "주계정 실행중"
+            case "account2": acctLabel = "부계정 실행중"
+            case "account3": acctLabel = "세 번째 계정 실행중"
+            default: acctLabel = "다른 계정 실행중"
+            }
             var desc = "\(cachePrefix)호스트 \(h.hostId): \(acctLabel)"
             if let rs = h.returnState {
                 desc += " (\(Self.returnStateKorean(rs)))"

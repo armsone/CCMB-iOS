@@ -460,12 +460,26 @@ struct NASGeminiOnlineClient {
 struct NASConsumptionHistoryClient {
     private static let historyFileName = "CCMB-nas-consumption-history-v1.json"
     private static let historyV2FileName = "CCMB-nas-consumption-history-v2.json"
+    private static let historyV3FileName = "CCMB-nas-consumption-history-v3.json"
 
     func fetchStoredHistory() async throws -> Data {
         try await NASGeminiOnlineClient.downloadRelayFile(
             named: Self.historyFileName,
             maxBytes: UsageSnapshot.nasHistoryMaxBytes
         )
+    }
+
+    /// 24시간 기록 파일(v3). HTTP 404(NAS 서버가 아직 v3 경로를 열지 않음)일 때만 `nil`을
+    /// 돌려주고 호출자가 v2→v1로 내려간다. 다른 오류는 그대로 던진다.
+    func fetchStoredHistoryV3() async throws -> Data? {
+        do {
+            return try await NASGeminiOnlineClient.downloadRelayFile(
+                named: Self.historyV3FileName,
+                maxBytes: UsageSnapshot.nasHistoryV3MaxBytes
+            )
+        } catch NASFetchError.notFound {
+            return nil
+        }
     }
 
     /// `gemini2`를 포함하는 새 6-시리즈 파일. HTTP 404일 때만 `nil`을 돌려주고

@@ -12,6 +12,7 @@ enum NASCacheCodec {
     static let snapshotLegacyFormat = "nas-legacy"
     static let historyV1Format = "nas-history-v1"
     static let historyV2Format = "nas-history-v2"
+    static let historyV3Format = "nas-history-v3"
     static let maxSnapshotCacheBytes = 262_144
 
     struct PreparedSnapshot {
@@ -39,9 +40,13 @@ enum NASCacheCodec {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         if isV2 {
             guard UsageSnapshot.isV2Envelope(object), let services = object["services"] as? [[String: Any]] else { return nil }
+            let knownServices = services.filter {
+                guard let name = $0["service"] as? String else { return false }
+                return UsageSnapshot.v2RequiredIdentity[name] != nil
+            }
             var out: [String: Any] = [
                 "schema_version": UsageSnapshot.v2SchemaVersion,
-                "services": services.map { sanitizedService($0, keys: serviceKeysV2) }
+                "services": knownServices.map { sanitizedService($0, keys: serviceKeysV2) }
             ]
             if let quotaOrigin = object["quota_origin"] as? String { out["quota_origin"] = quotaOrigin }
             if let generatedAt = object["generated_at"], generatedAt is NSNull || generatedAt is NSNumber {
@@ -255,7 +260,7 @@ enum NASCacheCodec {
         // Decoding the cache marks host metadata as cached; the shown live
         // result must carry the freshest live host metadata instead.
         snapshot.nasHostStatus = live.nasHostStatus
-        for service in [Service.gemini, Service.gemini2] {
+        for service in [Service.gemini, Service.gemini2, Service.gemini3] {
             if var usage = snapshot.services[service] {
                 usage.nasHostStatus = live.services[service]?.nasHostStatus
                 snapshot.services[service] = usage
@@ -297,7 +302,7 @@ enum NASCacheCodec {
         guard let documentData = try? JSONSerialization.data(withJSONObject: document) else { return nil }
         let parsed = isV2 ? try? UsageSnapshot.parseNASv2(documentData) : try? UsageSnapshot.parseNAS(documentData)
         guard let parsed else { return nil }
-        let lastKnown = Set((object["lastKnown"] as? [String] ?? []).filter { UsageSnapshot.v2ServiceOrder.contains($0) })
+        let lastKnown = Set((object["lastKnown"] as? [String] ?? []).filter { UsageSnapshot.v2RequiredIdentity.keys.contains($0) })
         return CachedSnapshot(snapshot: parsed.markingLastKnown(lastKnown).markingNASHostStatusCached(), isV2: isV2, document: document, lastKnown: lastKnown)
     }
 
@@ -306,6 +311,9 @@ enum NASCacheCodec {
     static func encodeHistoryCache(_ reading: NASConsumptionHistory, origin: String) -> Data? {
         let wrapper: [String: Any]
         switch reading.schemaVersion {
+        case 3:
+            guard let document = reading.v3ContractDocument() else { return nil }
+            wrapper = ["cacheFormat": historyV3Format, "document": document, "baseURLOrigin": origin]
         case 2:
             guard let document = reading.v2ContractDocument() else { return nil }
             wrapper = ["cacheFormat": historyV2Format, "document": document, "baseURLOrigin": origin]
@@ -334,6 +342,9 @@ enum NASCacheCodec {
         case historyV2Format:
             guard let document = object["document"] as? [String: Any] else { return nil }
             return try? UsageSnapshot.decodeNASConsumptionHistoryV2(document, now: now)
+        case historyV3Format:
+            guard let document = object["document"] as? [String: Any] else { return nil }
+            return try? UsageSnapshot.decodeNASConsumptionHistoryV3(document, now: now)
         default:
             return nil
         }

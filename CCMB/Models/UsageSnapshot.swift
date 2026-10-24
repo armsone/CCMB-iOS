@@ -82,7 +82,7 @@ private struct JSONObject {
 }
 
 enum Service: String, CaseIterable, Identifiable {
-    case codex, claude, gemini, gemini2, grok
+    case codex, claude, gemini, gemini2, gemini3, grok
 
     var id: String { rawValue }
 
@@ -92,6 +92,7 @@ enum Service: String, CaseIterable, Identifiable {
         case .claude: return "Claude"
         case .gemini: return "Gemini"
         case .gemini2: return "Gemini 부계정"
+        case .gemini3: return "Gemini 세 번째 계정"
         case .grok: return "Grok"
         }
     }
@@ -182,6 +183,8 @@ struct ServiceUsage {
             accountRef = "account1"
         case .gemini2:
             accountRef = "account2"
+        case .gemini3:
+            accountRef = "account3"
         default:
             return []
         }
@@ -243,6 +246,8 @@ struct UsageConsumptionHistory {
     let claude: [UsageConsumptionPoint]
     let claudeFable: [UsageConsumptionPoint]
     let gemini: [UsageConsumptionPoint]
+    var gemini2: [UsageConsumptionPoint] = []
+    var gemini3: [UsageConsumptionPoint] = []
 }
 
 /// A fully parsed `usage-v1.json` (schemaVersion 1). Unknown fields are
@@ -339,7 +344,7 @@ struct UsageSnapshot {
             }
             return positive
 
-        case .gemini2:
+        case .gemini2, .gemini3:
             if let weekly = usage.windows.first(where: { $0.id == "cliWeekly" })?.remainingPercent,
                weekly <= 0 {
                 return []
@@ -370,6 +375,9 @@ struct UsageSnapshot {
         services[.codex] = parseCodex(root.object("codex"), root: root)
         services[.claude] = parseClaude(root.object("claude"))
         services[.gemini] = parseGemini(root.object("gemini"))
+        if let gemini3 = root.object("gemini3") {
+            services[.gemini3] = parseGemini(gemini3, identity: .gemini3)
+        }
         services[.grok] = parseGrok(root.object("grok"))
 
         return UsageSnapshot(
@@ -390,12 +398,14 @@ struct UsageSnapshot {
             }
         }
         return UsageConsumptionHistory(
-            slotCount: max(1, history.int("slotCount") ?? 40),
+            slotCount: max(1, min(UsageSnapshot.nasHistory24hMaxSamples, history.int("slotCount") ?? 480)),
             codex: samples("codex"),
             codexSpark: samples("codexSpark"),
             claude: samples("claude"),
             claudeFable: samples("claudeFable"),
-            gemini: samples("gemini")
+            gemini: samples("gemini"),
+            gemini2: samples("gemini2"),
+            gemini3: samples("gemini3")
         )
     }
 
@@ -495,11 +505,11 @@ struct UsageSnapshot {
         )
     }
 
-    private static func parseGemini(_ gemini: JSONObject?) -> ServiceUsage {
+    private static func parseGemini(_ gemini: JSONObject?, identity: Service = .gemini) -> ServiceUsage {
         // Gemini 온라인(웹) 사용량은 더 이상 표시하지 않는다. CLI 세션/주간만 쓴다.
         let fetchedAt = gemini?.date("fetchedAt")
         return ServiceUsage(
-            service: .gemini,
+            service: identity,
             status: gemini?.string("status"),
             windows: [
                 UsageWindow(
@@ -911,6 +921,7 @@ extension UsageSnapshot {
 extension UsageSnapshot {
     static let v2SchemaVersion = 2
     static let v2ServiceOrder = ["codex", "claude", "gemini", "gemini2"]
+    static let v2KnownServiceOrder = ["codex", "claude", "gemini", "gemini2", "gemini3"]
 
     /// `true` only for a response this client recognizes as v2 at all
     /// (integral, non-boolean `schema_version` 2 and a `services` array of
@@ -929,7 +940,8 @@ extension UsageSnapshot {
         "codex": ("codex", nil),
         "claude": ("claude", nil),
         "gemini": ("gemini", "account1"),
-        "gemini2": ("gemini", "account2")
+        "gemini2": ("gemini", "account2"),
+        "gemini3": ("gemini", "account3")
     ]
 
     static func parseNASv2(_ data: Data) throws -> UsageSnapshot {
@@ -947,13 +959,24 @@ extension UsageSnapshot {
             throw SnapshotError.unsupportedSchema
         }
 
-        // Exactly four entries in the fixed order; a duplicate, missing,
-        // reordered or unknown id is never resolved by guessing.
-        guard serviceObjects.map({ $0["service"] as? String }) == v2ServiceOrder.map(Optional.some) else {
+        // First four entries must match the fixed required order;
+        // additional entries (e.g. gemini3) are optional.
+        guard serviceObjects.count >= v2ServiceOrder.count else {
             throw SnapshotError.unsupportedSchema
         }
+        let firstFourNames = serviceObjects.prefix(v2ServiceOrder.count).map { $0["service"] as? String }
+        guard firstFourNames == v2ServiceOrder.map(Optional.some) else {
+            throw SnapshotError.unsupportedSchema
+        }
+        var seenServices = Set<String>()
         for entry in serviceObjects {
-            try validateV2Service(entry)
+            guard let name = entry["service"] as? String else { throw SnapshotError.unsupportedSchema }
+            if v2RequiredIdentity[name] != nil {
+                guard seenServices.insert(name).inserted else {
+                    throw SnapshotError.unsupportedSchema
+                }
+                try validateV2Service(entry)
+            }
         }
 
         // `generated_at` is a required key: finite positive Unix seconds,
@@ -982,12 +1005,18 @@ extension UsageSnapshot {
             }
         }
 
-        let entries = serviceObjects.map(JSONObject.init)
+        func findService(_ name: String) -> JSONObject? {
+            serviceObjects.first { ($0["service"] as? String) == name }.map(JSONObject.init)
+        }
+
         var services: [Service: ServiceUsage] = [:]
-        services[.codex] = parseNASCodex(entries[0])
-        services[.claude] = parseNASClaude(entries[1])
-        services[.gemini] = parseNASGemini(entries[2], identity: .gemini)
-        services[.gemini2] = parseNASGemini(entries[3], identity: .gemini2)
+        services[.codex] = parseNASCodex(findService("codex"))
+        services[.claude] = parseNASClaude(findService("claude"))
+        services[.gemini] = parseNASGemini(findService("gemini"), identity: .gemini)
+        services[.gemini2] = parseNASGemini(findService("gemini2"), identity: .gemini2)
+        if let gemini3Obj = findService("gemini3") {
+            services[.gemini3] = parseNASGemini(gemini3Obj, identity: .gemini3)
+        }
         services[.grok] = parseNASUnavailable(.grok)
 
         let hostStatus = NASHostStatus.parse(
@@ -995,13 +1024,11 @@ extension UsageSnapshot {
             autoSwitchEnabled: dictionary["auto_switch_enabled"],
             autoSwitchAvailable: dictionary["auto_switch_available"]
         )
-        if var gemini = services[.gemini] {
-            gemini.nasHostStatus = hostStatus
-            services[.gemini] = gemini
-        }
-        if var gemini2 = services[.gemini2] {
-            gemini2.nasHostStatus = hostStatus
-            services[.gemini2] = gemini2
+        for svc in [Service.gemini, Service.gemini2, Service.gemini3] {
+            if var gem = services[svc] {
+                gem.nasHostStatus = hostStatus
+                services[svc] = gem
+            }
         }
 
         // Unlike legacy `/api/usage`, a valid v2 document whose every
@@ -1118,15 +1145,12 @@ extension UsageSnapshot {
             status.isCached = true
             copy.nasHostStatus = status
         }
-        if var gemini = copy.services[.gemini], var status = gemini.nasHostStatus {
-            status.isCached = true
-            gemini.nasHostStatus = status
-            copy.services[.gemini] = gemini
-        }
-        if var gemini2 = copy.services[.gemini2], var status = gemini2.nasHostStatus {
-            status.isCached = true
-            gemini2.nasHostStatus = status
-            copy.services[.gemini2] = gemini2
+        for svc in [Service.gemini, Service.gemini2, Service.gemini3] {
+            if var gem = copy.services[svc], var status = gem.nasHostStatus {
+                status.isCached = true
+                gem.nasHostStatus = status
+                copy.services[svc] = gem
+            }
         }
         return copy
     }
@@ -1276,6 +1300,7 @@ struct NASConsumptionHistory {
     /// Only ever populated from the v2 history file; the strict v1 file has
     /// no gemini2 key at all and must never be made to carry one.
     let gemini2: [UsageConsumptionPoint]
+    var gemini3: [UsageConsumptionPoint] = []
     let codexUsesCredits: Bool
     /// v2 only: each series' `identityGeneration` (Gemini account binding
     /// generation, or null), keyed by series name. Points keep their own
@@ -1284,24 +1309,30 @@ struct NASConsumptionHistory {
     var identityGenerations: [String: String?] = [:]
     /// When the NAS last accepted a fresh reading — never the download time.
     let collectedAt: Date
-    /// Which wire contract this reading was validated against (1 or 2).
+    /// Which wire contract this reading was validated against (1, 2 or 3).
     var schemaVersion: Int = 1
 
     var history: UsageConsumptionHistory {
         UsageConsumptionHistory(
-            slotCount: UsageSnapshot.nasHistoryMaxSamples,
+            slotCount: UsageSnapshot.nasHistory24hMaxSamples,
             codex: codexUsesCredits ? codexCredits : codex,
             codexSpark: [],
             claude: claude,
             claudeFable: claudeFable,
-            gemini: gemini
+            gemini: gemini,
+            gemini2: gemini2,
+            gemini3: gemini3
         )
+    }
+
+    var totalPointCount: Int {
+        codex.count + codexCredits.count + claude.count + claudeFable.count + gemini.count + gemini2.count + gemini3.count
     }
 
     /// True until the NAS has a second fresh reading to compare against its
     /// first (baseline) one.
     var isEmpty: Bool {
-        codex.isEmpty && codexCredits.isEmpty && claude.isEmpty && claudeFable.isEmpty && gemini.isEmpty && gemini2.isEmpty
+        codex.isEmpty && codexCredits.isEmpty && claude.isEmpty && claudeFable.isEmpty && gemini.isEmpty && gemini2.isEmpty && gemini3.isEmpty
     }
 
     func points(forSeries key: String) -> [UsageConsumptionPoint] {
@@ -1312,6 +1343,7 @@ struct NASConsumptionHistory {
         case "claudeFable": return claudeFable
         case "gemini": return gemini
         case "gemini2": return gemini2
+        case "gemini3": return gemini3
         default: return []
         }
     }
@@ -1404,7 +1436,15 @@ extension UsageSnapshot {
     }
 
     static let nasHistoryV2SeriesKeys = ["codex", "codexCredits", "claude", "claudeFable", "gemini", "gemini2"]
-    static let nasHistoryV2MaxBytes = 49152
+    static let nasHistoryV2OptionalSeriesKeys = ["gemini3"]
+    static let nasHistory24hWindowSeconds: TimeInterval = 24 * 60 * 60
+    /// Bounded 24-hour capacity per series: 480 samples at 180s cadence plus
+    /// bounded headroom for manual refreshes (never unbounded). Equals the
+    /// NAS v3 export bound.
+    static let nasHistory24hMaxSamples = 600
+    static let nasHistoryV2MaxBytes = 524_288
+    static let nasHistoryV3MaxBytes = 262_144
+    static let nasHistoryV3GapSeconds = 900
 
     /// The fixed unit of each v2 series (§11.2): only `codexCredits` is
     /// credits; every other series is percent.
@@ -1452,17 +1492,22 @@ extension UsageSnapshot {
         }
 
         guard let generatedAt = epochMilliseconds(dictionary["generatedAt"]),
-              let seriesDict = dictionary["series"] as? [String: Any],
-              Set(seriesDict.keys) == Set(nasHistoryV2SeriesKeys) else { throw NASHistoryParseError.invalid }
+              let seriesDict = dictionary["series"] as? [String: Any] else { throw NASHistoryParseError.invalid }
+        let seriesKeys = Set(seriesDict.keys)
+        let requiredKeys = Set(nasHistoryV2SeriesKeys)
+        let allowedKeys = requiredKeys.union(nasHistoryV2OptionalSeriesKeys)
+        guard requiredKeys.isSubset(of: seriesKeys), seriesKeys.isSubset(of: allowedKeys) else {
+            throw NASHistoryParseError.invalid
+        }
 
         var series: [String: [UsageConsumptionPoint]] = [:]
         var identityGenerations: [String: String?] = [:]
-        for key in nasHistoryV2SeriesKeys {
+        for key in seriesDict.keys {
             guard let seriesObject = seriesDict[key] as? [String: Any],
                   Set(seriesObject.keys) == ["identityGeneration", "points"],
                   let rawGeneration = seriesObject["identityGeneration"],
                   let pointsArray = seriesObject["points"] as? [Any],
-                  pointsArray.count <= nasHistoryMaxSamples else { throw NASHistoryParseError.invalid }
+                  pointsArray.count <= nasHistory24hMaxSamples else { throw NASHistoryParseError.invalid }
             // `updateValue` records an explicit null generation; subscript
             // assignment of nil would delete the key instead.
             if rawGeneration is NSNull {
@@ -1505,10 +1550,135 @@ extension UsageSnapshot {
             claudeFable: series["claudeFable"] ?? [],
             gemini: series["gemini"] ?? [],
             gemini2: series["gemini2"] ?? [],
+            gemini3: series["gemini3"] ?? [],
             codexUsesCredits: codexUsesCredits,
             identityGenerations: identityGenerations,
             collectedAt: generatedAt,
             schemaVersion: 2
+        )
+    }
+
+    static func decodeNASConsumptionHistoryV3(_ data: Data, now: Date = Date()) throws -> NASConsumptionHistory {
+        guard data.count <= nasHistoryV3MaxBytes,
+              let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NASHistoryParseError.invalid
+        }
+        return try decodeNASConsumptionHistoryV3(dictionary, now: now)
+    }
+
+    /// Validates the 24-hour history contract (`CCMB-nas-consumption-history-v3.json`):
+    /// root keys `schemaVersion`(3)/`source`("nas")/`generatedAt`/`windowSeconds`
+    /// (86400)/`windowStart`(`generatedAt` − 24h)/`gapSeconds`(900)/`series`;
+    /// the six fixed series (plus optional `gemini3`), each exactly
+    /// `{unit, identityGeneration, segments, points, coverage}`; at most 600
+    /// points of `[at, consumed, segmentIndex]` with strictly increasing,
+    /// non-future Unix-ms `at`, finite non-negative per-refresh consumption and a
+    /// valid index into `segments`; `coverage` must agree with the points.
+    /// Anything else rejects the whole file. Points are never interpolated or
+    /// invented here.
+    static func decodeNASConsumptionHistoryV3(_ dictionary: [String: Any], now: Date = Date()) throws -> NASConsumptionHistory {
+        guard let version = exactInteger(dictionary["schemaVersion"]) else { throw NASHistoryParseError.invalid }
+        guard version == 3 else { throw NASHistoryParseError.unknownSchema }
+        guard Set(dictionary.keys) == ["schemaVersion", "source", "generatedAt", "windowSeconds", "windowStart", "gapSeconds", "series"],
+              dictionary["source"] as? String == "nas",
+              exactInteger(dictionary["windowSeconds"]) == Int(nasHistory24hWindowSeconds),
+              exactInteger(dictionary["gapSeconds"]) == nasHistoryV3GapSeconds else { throw NASHistoryParseError.invalid }
+
+        let latestAllowed = now.addingTimeInterval(5 * 60)
+        func epochMilliseconds(_ value: Any?) -> Double? {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            let ms = number.doubleValue
+            guard ms.isFinite, ms == ms.rounded(), ms > 1_000_000_000_000, ms < 4_200_000_000_000,
+                  Date(timeIntervalSince1970: ms / 1000) <= latestAllowed else { return nil }
+            return ms
+        }
+
+        guard let generatedMs = epochMilliseconds(dictionary["generatedAt"]),
+              let windowStartMs = epochMilliseconds(dictionary["windowStart"]),
+              windowStartMs == generatedMs - nasHistory24hWindowSeconds * 1000,
+              let seriesDict = dictionary["series"] as? [String: Any] else { throw NASHistoryParseError.invalid }
+        let seriesKeys = Set(seriesDict.keys)
+        let requiredKeys = Set(nasHistoryV2SeriesKeys)
+        guard requiredKeys.isSubset(of: seriesKeys),
+              seriesKeys.isSubset(of: requiredKeys.union(nasHistoryV2OptionalSeriesKeys)) else {
+            throw NASHistoryParseError.invalid
+        }
+
+        var series: [String: [UsageConsumptionPoint]] = [:]
+        var identityGenerations: [String: String?] = [:]
+        for key in seriesDict.keys {
+            guard let object = seriesDict[key] as? [String: Any],
+                  Set(object.keys) == ["unit", "identityGeneration", "segments", "points", "coverage"],
+                  let unit = object["unit"] as? String, unit == nasHistoryV2Unit(forSeries: key),
+                  let rawGeneration = object["identityGeneration"],
+                  let rawSegments = object["segments"] as? [Any], rawSegments.count <= nasHistory24hMaxSamples,
+                  let rawPoints = object["points"] as? [Any], rawPoints.count <= nasHistory24hMaxSamples,
+                  let coverage = object["coverage"] as? [String: Any],
+                  Set(coverage.keys) == ["firstAt", "lastAt", "spansWindow"],
+                  let spansWindow = coverage["spansWindow"] as? Bool else { throw NASHistoryParseError.invalid }
+            if rawGeneration is NSNull {
+                identityGenerations.updateValue(nil, forKey: key)
+            } else if let generation = rawGeneration as? String, (1...128).contains(generation.count) {
+                identityGenerations.updateValue(generation, forKey: key)
+            } else {
+                throw NASHistoryParseError.invalid
+            }
+
+            var segments: [String] = []
+            for item in rawSegments {
+                guard let id = item as? String, isValidSegmentID(id) else { throw NASHistoryParseError.invalid }
+                segments.append(id)
+            }
+
+            var points: [UsageConsumptionPoint] = []
+            var previousMs: Double?
+            for item in rawPoints {
+                guard let triple = item as? [Any], triple.count == 3,
+                      let atMs = epochMilliseconds(triple[0]),
+                      let consumed = triple[1] as? NSNumber, CFGetTypeID(consumed) != CFBooleanGetTypeID(),
+                      consumed.doubleValue.isFinite, consumed.doubleValue >= 0,
+                      let index = exactInteger(triple[2]), segments.indices.contains(index) else {
+                    throw NASHistoryParseError.invalid
+                }
+                if let previousMs, atMs <= previousMs { throw NASHistoryParseError.invalid }
+                previousMs = atMs
+                points.append(UsageConsumptionPoint(
+                    at: Date(timeIntervalSince1970: atMs / 1000),
+                    amount: consumed.doubleValue,
+                    segmentId: segments[index],
+                    unit: unit
+                ))
+            }
+
+            let firstMs = rawPoints.isEmpty ? nil : epochMilliseconds((rawPoints.first as? [Any])?.first)
+            let lastMs = rawPoints.isEmpty ? nil : epochMilliseconds((rawPoints.last as? [Any])?.first)
+            func coverageMatches(_ raw: Any?, _ expected: Double?) -> Bool {
+                guard let expected else { return raw is NSNull }
+                return epochMilliseconds(raw) == expected
+            }
+            guard coverageMatches(coverage["firstAt"], firstMs), coverageMatches(coverage["lastAt"], lastMs),
+                  spansWindow == (firstMs.map { $0 <= windowStartMs + 1_200_000 } ?? false) else {
+                throw NASHistoryParseError.invalid
+            }
+            series[key] = points
+        }
+
+        let latestPercent = series["codex"]?.last?.at
+        let latestCredits = series["codexCredits"]?.last?.at
+        let codexUsesCredits = latestCredits.map { credits in latestPercent.map { credits > $0 } ?? true } ?? false
+
+        return NASConsumptionHistory(
+            codex: series["codex"] ?? [],
+            codexCredits: series["codexCredits"] ?? [],
+            claude: series["claude"] ?? [],
+            claudeFable: series["claudeFable"] ?? [],
+            gemini: series["gemini"] ?? [],
+            gemini2: series["gemini2"] ?? [],
+            gemini3: series["gemini3"] ?? [],
+            codexUsesCredits: codexUsesCredits,
+            identityGenerations: identityGenerations,
+            collectedAt: Date(timeIntervalSince1970: generatedMs / 1000),
+            schemaVersion: 3
         )
     }
 
@@ -1561,7 +1731,10 @@ extension NASConsumptionHistory {
         guard schemaVersion == 2 else { return nil }
         func milliseconds(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).rounded() }
         var series: [String: Any] = [:]
-        for key in UsageSnapshot.nasHistoryV2SeriesKeys {
+        let keys = identityGenerations.keys.contains("gemini3")
+            ? UsageSnapshot.nasHistoryV2SeriesKeys + ["gemini3"]
+            : UsageSnapshot.nasHistoryV2SeriesKeys
+        for key in keys {
             var points: [[String: Any]] = []
             for point in self.points(forSeries: key) {
                 guard let segmentId = point.segmentId, let unit = point.unit else { return nil }
@@ -1574,6 +1747,54 @@ extension NASConsumptionHistory {
             "schemaVersion": 2,
             "generatedAt": milliseconds(collectedAt),
             "source": "nas",
+            "series": series
+        ]
+    }
+
+    /// Re-encodes a v3-validated reading as the exact v3 wire contract so a
+    /// cached copy goes back through `decodeNASConsumptionHistoryV3`.
+    func v3ContractDocument() -> [String: Any]? {
+        guard schemaVersion == 3 else { return nil }
+        func milliseconds(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).rounded() }
+        let generatedMs = milliseconds(collectedAt)
+        let windowStartMs = generatedMs - UsageSnapshot.nasHistory24hWindowSeconds * 1000
+        var series: [String: Any] = [:]
+        let keys = identityGenerations.keys.contains("gemini3")
+            ? UsageSnapshot.nasHistoryV2SeriesKeys + ["gemini3"]
+            : UsageSnapshot.nasHistoryV2SeriesKeys
+        for key in keys {
+            var segments: [String] = []
+            var points: [[Any]] = []
+            for point in self.points(forSeries: key) {
+                guard let segmentId = point.segmentId else { return nil }
+                let index: Int
+                if let existing = segments.firstIndex(of: segmentId) {
+                    index = existing
+                } else {
+                    segments.append(segmentId)
+                    index = segments.count - 1
+                }
+                points.append([milliseconds(point.at), point.amount, index])
+            }
+            let firstMs = (points.first?.first as? Double).map { $0 as Any } ?? NSNull()
+            let lastMs = (points.last?.first as? Double).map { $0 as Any } ?? NSNull()
+            let spans = (points.first?.first as? Double).map { $0 <= windowStartMs + 1_200_000 } ?? false
+            let generation = identityGenerations[key] ?? nil
+            series[key] = [
+                "unit": UsageSnapshot.nasHistoryV2Unit(forSeries: key),
+                "identityGeneration": generation.map { $0 as Any } ?? NSNull(),
+                "segments": segments,
+                "points": points,
+                "coverage": ["firstAt": firstMs, "lastAt": lastMs, "spansWindow": spans] as [String: Any]
+            ]
+        }
+        return [
+            "schemaVersion": 3,
+            "source": "nas",
+            "generatedAt": generatedMs,
+            "windowSeconds": Int(UsageSnapshot.nasHistory24hWindowSeconds),
+            "windowStart": windowStartMs,
+            "gapSeconds": UsageSnapshot.nasHistoryV3GapSeconds,
             "series": series
         ]
     }

@@ -194,12 +194,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CCMB/CCMB.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610162108;
+				CURRENT_PROJECT_VERSION = 202610242114;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = CCMB;
-				INFOPLIST_KEY_BuildStamp = 202610081037;
+				INFOPLIST_KEY_BuildStamp = 202610242114;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "현재 위치의 날씨를 CCMB 제목 옆에 표시합니다.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -210,7 +210,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.ccmb.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -227,12 +227,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = CCMB/CCMB.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610162108;
+				CURRENT_PROJECT_VERSION = 202610242114;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = CCMB;
-				INFOPLIST_KEY_BuildStamp = 202610081037;
+				INFOPLIST_KEY_BuildStamp = 202610242114;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "현재 위치의 날씨를 CCMB 제목 옆에 표시합니다.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -243,7 +243,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4.10;
+				MARKETING_VERSION = 0.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.ccmb.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
