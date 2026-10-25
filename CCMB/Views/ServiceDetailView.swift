@@ -33,11 +33,11 @@ struct ServiceDetailView: View {
                                 Text(CCMBFormat.resetText(window.resetText) ?? CCMBFormat.resetTime(window.resetsAt))
                             }
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(CCMBDash.muted)
                             if let note = onlineCollectionNote(for: window) {
                                 Text(note)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(CCMBDash.muted)
                             }
                         }
                         .accessibilityElement(children: .combine)
@@ -87,7 +87,7 @@ struct ServiceDetailView: View {
                             if let resetsAt = limit.resetsAt {
                                 Text("초기화 \(CCMBFormat.resetTime(resetsAt))")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(CCMBDash.muted)
                             }
                         }
                         .accessibilityElement(children: .combine)
@@ -109,19 +109,19 @@ struct ServiceDetailView: View {
                 if usage.isLastKnown {
                     Text("최신 조회가 실패해 이 계정의 마지막 정상값을 원본 조회 시각과 함께 표시합니다.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                 }
                 if isBusy {
                     Text("NAS가 지금 수집 중입니다. 끝나면 다음 새로 고침에 반영됩니다.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                 }
                 if showsAccount, let accountDisplay = usage.accountDisplay {
                     LabeledContent("계정", value: accountDisplay)
                 }
                 Text(sourceExplanation)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CCMBDash.muted)
             }
 
             if usage.codexResetCreditsAvailable != nil || !usage.codexResetCreditExpirations.isEmpty {
@@ -134,7 +134,7 @@ struct ServiceDetailView: View {
                             Spacer()
                             Text(CCMBFormat.resetTime(date))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(CCMBDash.muted)
                                 .monospacedDigit()
                         }
                     }
@@ -149,7 +149,7 @@ struct ServiceDetailView: View {
                             Spacer()
                             Text(CCMBFormat.resetTime(expiresAt))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(CCMBDash.muted)
                                 .monospacedDigit()
                         }
                     }

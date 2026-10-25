@@ -24,33 +24,41 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        let history = makeHistory()
-        let banners = bannerItems(history: history)
-        GeometryReader { geo in
-            ScrollView {
-                VStack(spacing: Self.sectionGap) {
-                    header
-                    ForEach(Array(banners.enumerated()), id: \.offset) { _, item in
-                        banner(text: item.text, isWarning: item.isWarning)
-                    }
-                    cardsStack(history: history, availableHeight: geo.size.height, bannerCount: banners.count)
-                }
-                .frame(maxWidth: 480)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 12)
-                .padding(.top, 2)
-                .padding(.bottom, 8)
+        GeometryReader { outerGeo in
+            if UIDevice.current.userInterfaceIdiom == .pad && outerGeo.size.width >= 600 {
+                TabletDashboardView(snapshot: snapshot)
+            } else {
+                phoneDashboard(outerHeight: outerGeo.size.height)
             }
-            .refreshable { store.refresh() }
         }
         .background(
             LinearGradient(colors: [CCMBDash.canvasTop, CCMBDash.canvasBottom], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
         )
-        // 선택된 라이트 디자인: 이 화면만 밝은 표면을 쓰고 전역 테마 선택은 그대로 둔다.
-        .environment(\.colorScheme, .light)
-        .preferredColorScheme(.light)
+        // 선택된 병기스타일 테마의 밝음/어두움을 따른다.
+        .environment(\.colorScheme, appearanceStore.selection.preferredColorScheme)
+        .preferredColorScheme(appearanceStore.selection.preferredColorScheme)
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func phoneDashboard(outerHeight: CGFloat) -> some View {
+        let history = makeHistory()
+        let banners = bannerItems(history: history)
+        return ScrollView {
+            VStack(spacing: Self.sectionGap) {
+                header
+                ForEach(Array(banners.enumerated()), id: \.offset) { _, item in
+                    banner(text: item.text, isWarning: item.isWarning)
+                }
+                cardsStack(history: history, availableHeight: outerHeight, bannerCount: banners.count)
+            }
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
+            .padding(.bottom, 8)
+        }
+        .refreshable { store.refresh() }
     }
 
     // MARK: Cards
@@ -86,10 +94,9 @@ struct DashboardView: View {
             + Self.sectionGap * CGFloat(services.count + bannerCount)
             + CGFloat(bannerCount) * Self.estimatedBannerHeight
             + 10
-        let scale = min(
-            Self.maximumCardScale,
-            max(Self.minimumCardScale, (availableHeight - overhead) / max(1, weights.reduce(0, +)))
-        )
+        // iPhone은 남는 세로 공간을 모두 카드(=그래프) 높이로 나눠 하단 빈 공간을 없앤다. 헤더 영역은 고정이다.
+        let fit = max(Self.minimumCardScale, (availableHeight - overhead) / max(1, weights.reduce(0, +)))
+        let scale = UIDevice.current.userInterfaceIdiom == .phone ? fit : min(Self.maximumCardScale, fit)
         return zip(services, weights).map { service, weight in
             max(weight * scale, AccountCardView.minimumHeight(for: service))
         }
@@ -174,31 +181,45 @@ struct DashboardView: View {
         store.displayedSource == .nas ? "NAS" : "Mac"
     }
 
+    /// 병기스타일 테마 버튼: 짧게 누르면 다음 테마, 길게 누르면 4개 선택 메뉴(시스템 Menu 기본 동작).
     private var appearanceMenu: some View {
-        Menu {
+        let current = appearanceStore.selection
+        return Menu {
             ForEach(CCMBAppearance.allCases) { appearance in
                 Button {
                     appearanceStore.select(appearance)
                 } label: {
-                    Label(
-                        appearance.name,
-                        systemImage: appearanceStore.selection == appearance ? "checkmark" : appearance.symbol
-                    )
+                    if appearance == current {
+                        Label(appearance.name, systemImage: "checkmark")
+                    } else {
+                        Text(appearance.name)
+                    }
                 }
+                .accessibilityAddTraits(appearance == current ? .isSelected : [])
             }
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(CCMBDash.ink)
+            CCMBThemeIcon(appearance: current)
+                .foregroundStyle(CCMBPalette.current.accent)
                 .frame(width: 44, height: 36)
                 .contentShape(Rectangle())
+        } primaryAction: {
+            appearanceStore.cycle()
         }
-        .accessibilityLabel("메뉴")
+        .background(
+            // 외장 키보드: ⌘T 순환(화면에는 보이지 않는 단축키 버튼).
+            Button("테마 순환") { appearanceStore.cycle() }
+                .keyboardShortcut("t", modifiers: .command)
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        )
+        .accessibilityLabel("병기스타일 테마: \(current.name) (누르면 \(current.next.name), 길게 누르면 목록)")
+        .accessibilityValue(current.name)
     }
 
     // MARK: Warnings
 
-    private func bannerItems(history: DashboardHistory) -> [(text: String, isWarning: Bool)] {
+    func bannerItems(history: DashboardHistory) -> [(text: String, isWarning: Bool)] {
         var items: [(text: String, isWarning: Bool)] = []
         if let problem = store.refreshProblem { items.append((problem, true)) }
         if let nasError = store.nasConnectError { items.append((nasError, true)) }
@@ -229,7 +250,7 @@ struct DashboardView: View {
         return "이전 NAS의 데이터입니다. 새 NAS에 다시 연결해 주세요."
     }
 
-    private func banner(text: String, isWarning: Bool) -> some View {
+    func banner(text: String, isWarning: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: isWarning ? "clock.badge.exclamationmark" : "internaldrive")
                 .foregroundStyle(isWarning ? CCMBTheme.signalRed : CCMBDash.muted)
@@ -248,7 +269,7 @@ struct DashboardView: View {
     // MARK: History source
 
     /// 라이브(Mac) 기록이 있으면 그것을, NAS 소스면 NAS가 모은 기록을 쓴다. 둘 다 없으면 빈 그래프.
-    private func makeHistory() -> DashboardHistory {
+    func makeHistory() -> DashboardHistory {
         if let live = snapshot.consumptionHistory {
             return DashboardHistory(
                 history: live,
@@ -530,7 +551,7 @@ struct Account24hModel {
             windowStart: windowStart,
             earliest: earliest ?? windowStart
         )
-        let peak = buckets.map(\.amount).max() ?? 0
+        let peak = buckets.map(\.amount).filter { $0.isFinite && $0 > 0 }.max() ?? 0
         self.buckets = buckets
         self.earliest = earliest
         self.usesCreditsScale = usesCreditsScale
@@ -542,31 +563,38 @@ struct Account24hModel {
         self.yMax = Self.axisMax(peak: peak, usesCreditsScale: usesCreditsScale)
     }
 
-    /// 실제 표본 크기에 맞춘 깔끔한 y축 상한(2%를 100으로 부풀리거나 가짜 0..100 눈금을 만들지 않는다).
+    /// 실제 관찰된 표본 최대치(peak)를 그대로 상한으로 사용한다.
+    /// peak가 양의 유한수가 아니면 fallback(퍼센트 5, 크레딧 10) 적용.
     private static func axisMax(peak: Double, usesCreditsScale: Bool) -> Double {
-        if usesCreditsScale {
-            if peak <= 0 { return 10 }
-            let candidates: [Double] = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
-            if let match = candidates.first(where: { peak <= $0 * 0.92 }) { return match }
-            return ceil(peak / 1000) * 1000
+        if peak.isFinite && peak > 0 {
+            return peak
         }
-        if peak <= 0 { return 5 }
-        let candidates: [Double] = [1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
-        if let match = candidates.first(where: { peak <= $0 * 0.92 }) { return match }
-        return 100
+        return usesCreditsScale ? 10 : 5
     }
 
     var hasData: Bool { !buckets.isEmpty }
 
     func axisText(_ value: Double) -> String {
+        guard value.isFinite else { return "0" }
+        if abs(value) < 1e-9 { return "0" }
         if usesCreditsScale {
             let formatter = NumberFormatter()
             formatter.numberStyle = .decimal
             formatter.locale = Locale(identifier: "ko_KR")
-            formatter.maximumFractionDigits = 0
-            return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
+            formatter.minimumFractionDigits = 0
+            formatter.maximumFractionDigits = 2
+            return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
         }
-        return value == value.rounded() ? String(format: "%.0f", value) : String(format: "%.1f", value)
+        if value == value.rounded() {
+            return String(format: "%.0f", value)
+        }
+        // 소수점 유효숫자 최대 2자리까지 표기하되 불필요한 뒷자리 0 제거
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
     }
 
     private func amountText(_ value: Double) -> String {
@@ -593,7 +621,7 @@ struct Account24hPlot: View {
     /// nil이면 위에서 준 높이를 모두 채운다.
     var fixedHeight: CGFloat? = nil
 
-    static let gutter: CGFloat = 28
+    static let gutter: CGFloat = 34
     private static let topPad: CGFloat = 5
     private static let bottomPad: CGFloat = 3
 

@@ -18,7 +18,7 @@ struct WelcomeView: View {
                     Text("Codex · Claude · Gemini")
                         .font(.headline)
                     Text("집 NAS에 모인 사용량을 어디서든 확인합니다.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                         .multilineTextAlignment(.center)
                 }
                 .padding(.horizontal, 24)
@@ -54,7 +54,7 @@ struct WelcomeView: View {
 
                 Text("사용량은 집 NAS에서 직접 읽어 옵니다.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CCMBDash.muted)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
 
@@ -92,7 +92,7 @@ struct WelcomeView: View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(number)")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(CCMBPalette.current.bg)
                 .frame(width: 24, height: 24)
                 .background(CCMBTheme.charcoal, in: Circle())
                 .accessibilityHidden(true)

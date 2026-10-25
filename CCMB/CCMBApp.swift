@@ -15,6 +15,7 @@ struct CCMBApp: App {
                 .environmentObject(weatherStore)
                 .environmentObject(appearanceStore)
                 .preferredColorScheme(appearanceStore.selection.preferredColorScheme)
+                .tint(CCMBPalette.current.accent)
                 .onAppear {
                     UIApplication.shared.isIdleTimerDisabled = true
                     store.loadOnLaunch()
@@ -29,12 +30,13 @@ struct CCMBApp: App {
                     if phase == .active {
                         store.resumeAutomaticRefresh()
                         store.refresh(isAutomatic: true)
-                        weatherStore.refresh()
+                        weatherStore.resume()
                     } else {
                         // The automatic refresh timer only ever runs in the
                         // foreground; background/inactive stops it instead
                         // of letting it keep firing network requests.
                         store.pauseAutomaticRefresh()
+                        weatherStore.pause()
                     }
                 }
         }

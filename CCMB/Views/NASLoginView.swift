@@ -151,13 +151,13 @@ struct NASLoginSheetView: View {
                     })
                 } else {
                     Text("NAS 주소가 올바르지 않습니다. 설정에서 다시 확인해 주세요.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                         .padding()
                 }
                 if blockedNavigation {
                     Text("NAS 로그인 페이지 밖으로는 이동할 수 없습니다. 로그인 페이지로 돌아가 다시 시도해 주세요.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                         .padding(.top, 8)
@@ -165,7 +165,7 @@ struct NASLoginSheetView: View {
                 VStack(spacing: 8) {
                     Text("비밀번호를 입력하고 아래 로그인 버튼을 눌러 주세요.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(CCMBDash.muted)
                         .multilineTextAlignment(.center)
                     Button {
                         loginPage.submit { submitted in

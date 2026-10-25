@@ -9,6 +9,8 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             content
+                .foregroundStyle(CCMBDash.ink)
+                .id(appearanceStore.selection)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -32,7 +34,7 @@ struct RootView: View {
             VStack(spacing: 12) {
                 ProgressView()
                 Text("사용량을 불러오는 중…")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(CCMBDash.muted)
             }
         case .loaded(let snapshot):
             DashboardView(snapshot: snapshot)

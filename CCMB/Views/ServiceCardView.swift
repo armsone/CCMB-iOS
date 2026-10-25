@@ -15,10 +15,10 @@ struct AccountCardView: View {
 
     // MARK: Reference geometry
 
-    /// 승인 이미지의 카드 비율(Codex 173 : Claude 139 : Gemini 132).
+    /// 승인 이미지의 카드 비율(Codex 139 : Claude 139 : Gemini 132).
     static func referenceHeight(for service: Service) -> CGFloat {
         switch service {
-        case .codex: return 173
+        case .codex: return 139
         case .claude: return 139
         default: return 132
         }
@@ -26,12 +26,13 @@ struct AccountCardView: View {
 
     /// 그래프가 최소한 읽히도록 지키는 카드 높이.
     static func minimumHeight(for service: Service) -> CGFloat {
-        service == .codex ? 159 : 114
+        114
     }
 
     private static let quotaRowHeight: CGFloat = 51
     private static let barHeight: CGFloat = 7
     private static let barWidth: CGFloat = 176
+    private static let lockedBlockWidth: CGFloat = 232
 
     private var isNatural: Bool { height == nil }
     private var isAccessibilitySize: Bool { dynamicTypeSize.isAccessibilitySize }
@@ -44,11 +45,16 @@ struct AccountCardView: View {
 
     // MARK: Data
 
+    private enum QuotaKind {
+        case window, resetCredits, tokens, empty
+    }
+
     private struct QuotaItem: Identifiable {
         let id: String
         let label: String
         let window: UsageWindow?
         let color: Color
+        var kind: QuotaKind = .window
     }
 
     private func window(_ id: String) -> UsageWindow? {
@@ -58,19 +64,30 @@ struct AccountCardView: View {
     private var quotaItems: [QuotaItem] {
         switch usage.service {
         case .codex:
-            return [QuotaItem(id: "weekly", label: "주간", window: window("weekly"), color: accent)]
+            return [
+                QuotaItem(id: "resetCredits", label: resetCreditHeader, window: nil, color: accent, kind: .resetCredits),
+                QuotaItem(id: "weekly", label: "주간", window: window("weekly"), color: accent),
+                QuotaItem(id: "tokens", label: tokenLabel, window: nil, color: CCMBDash.ink, kind: .tokens)
+            ]
         case .claude:
             return [
+                QuotaItem(id: "fableWeekly", label: "페이블", window: window("fableWeekly"), color: CCMBDash.fable),
                 QuotaItem(id: "fiveHour", label: "세션", window: window("fiveHour"), color: CCMBDash.claude),
-                QuotaItem(id: "weekly", label: "주간", window: window("weekly"), color: CCMBDash.claude),
-                QuotaItem(id: "fableWeekly", label: "페이블", window: window("fableWeekly"), color: CCMBDash.fable)
+                QuotaItem(id: "weekly", label: "주간", window: window("weekly"), color: CCMBDash.claude)
             ]
         default:
             return [
-                QuotaItem(id: "five", label: "5시간", window: geminiSessionWindow, color: accent),
+                QuotaItem(id: "empty", label: "", window: nil, color: accent, kind: .empty),
+                QuotaItem(id: "five", label: "세션", window: geminiSessionWindow, color: accent),
                 QuotaItem(id: "weekly", label: "주간", window: geminiWeeklyWindow, color: accent)
             ]
         }
+    }
+
+    /// 게이지는 표시 순서와 무관하게 기존 기준(Claude는 세션)을 유지한다.
+    private var gaugeItem: QuotaItem? {
+        let items = quotaItems
+        return items.first { $0.id == "fiveHour" } ?? items.first { $0.id == "five" } ?? items.first { $0.id == "weekly" }
     }
 
     private var geminiSessionWindow: UsageWindow? {
@@ -121,34 +138,30 @@ struct AccountCardView: View {
         usage.codexResetCreditsAvailable ?? (usage.codexResetCreditExpirations.isEmpty ? nil : usage.codexResetCreditExpirations.count)
     }
 
-    /// 같은 시각에 만료되는 리셋권은 한 줄로 묶고 줄에는 날짜·시각만 둔다. 많으면 앞의 둘만 보이고 '외 N개'.
+    private var resetCreditHeader: String {
+        "리셋권 \(resetCreditCount.map { "\($0)개" } ?? "—")"
+    }
+
+    /// 같은 시각에 만료되는 리셋권은 한 줄로 묶는다. 화면에는 가장 이른 두 날짜만 보인다.
+    private var expiryGroups: [Date] {
+        var groups: [Date] = []
+        for date in usage.codexResetCreditExpirations.sorted() {
+            if let last = groups.last, CCMBFormat.monthDayTime(last) == CCMBFormat.monthDayTime(date) { continue }
+            groups.append(date)
+        }
+        return groups
+    }
+
     private var expiryLines: [String] {
-        let dates = usage.codexResetCreditExpirations.sorted()
-        guard !dates.isEmpty else { return [] }
-        var groups: [(date: Date, count: Int)] = []
-        for date in dates {
-            let stamp = CCMBFormat.monthDayTime(date)
-            if let last = groups.last, CCMBFormat.monthDayTime(last.date) == stamp {
-                groups[groups.count - 1].count += 1
-            } else {
-                groups.append((date, 1))
-            }
-        }
-        var lines = groups.prefix(3).map { CCMBFormat.quotaTime($0.date) }
-        if groups.count > 3 {
-            let rest = groups.dropFirst(2).reduce(0) { $0 + $1.count }
-            lines = Array(lines.prefix(2)) + ["외 \(rest)개"]
-        }
-        return lines
+        expiryGroups.prefix(2).map { CCMBFormat.quotaTime($0) }
+    }
+
+    private var allExpiryLines: [String] {
+        expiryGroups.map { CCMBFormat.quotaTime($0) }
     }
 
     private var expiryEmptyText: String {
         resetCreditCount == 0 ? "없음" : "만료정보없음"
-    }
-
-    /// 만료 목록이 세 줄이면 Codex 지표 행이 한 줄만큼 늘어난다.
-    private var extraExpiryHeight: CGFloat {
-        isNatural ? 0 : CGFloat(max(0, expiryLines.count - 2)) * 13
     }
 
     // MARK: Notice
@@ -202,13 +215,11 @@ struct AccountCardView: View {
     var body: some View {
         let notice = cardNotice
         let model = history.model(for: usage.service)
-        let fixedHeight = height.map { $0 + extraExpiryHeight + (notice.map { noticeHeight($0.text) } ?? 0) }
+        let fixedHeight = height.map { $0 + (notice.map { noticeHeight($0.text) } ?? 0) }
 
         VStack(alignment: .leading, spacing: 0) {
             if isNatural {
                 naturalContent(model: model)
-            } else if usage.service == .codex {
-                codexContent(model: model)
             } else {
                 standardContent(model: model)
             }
@@ -252,36 +263,27 @@ struct AccountCardView: View {
     /// Claude·Gemini: 위 한 줄(아이콘/이름 + 한도), 그 아래 전폭 그래프.
     private func standardContent(model: Account24hModel?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 6) {
-                VStack(alignment: .leading, spacing: 0) {
-                    identityRow
-                    Spacer(minLength: 0)
-                }
-                .layoutPriority(1)
-                quotaBlock
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            .frame(height: Self.quotaRowHeight + 2 + Self.barHeight)
-
-            plot(model)
-                .padding(.top, 3)
-        }
-    }
-
-    /// Codex: 위 한 줄(아이콘/이름 + 주간 수치·초기화·남은 막대), 지표 한 줄(토큰·리셋권·만료), 전폭 그래프.
-    private func codexContent(model: Account24hModel?) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 6) {
-                identityRow
+            if usage.service == .claude {
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        identityRow
+                        Spacer(minLength: 0)
+                    }
                     .layoutPriority(1)
-                quotaBlock
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    quotaBlock
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .frame(height: Self.quotaRowHeight + 2 + Self.barHeight)
+            } else {
+                // Codex·Gemini: 지표 블록은 폭 232로 고정, 계정 이름이 지표 폭을 바꾸지 못한다.
+                ZStack(alignment: .topTrailing) {
+                    identityRow
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(.trailing, usage.service == .codex ? Self.lockedBlockWidth + 6 : Self.lockedBlockWidth / 3 + 6)
+                    lockedQuotaBlock
+                }
+                .frame(height: Self.quotaRowHeight + 2 + Self.barHeight, alignment: .top)
             }
-            .frame(height: Self.quotaRowHeight + 2 + Self.barHeight)
-
-            codexStats
-                .frame(height: 40 + extraExpiryHeight)
-                .padding(.top, 4)
 
             plot(model)
                 .padding(.top, 3)
@@ -292,15 +294,15 @@ struct AccountCardView: View {
     private func naturalContent(model: Account24hModel?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             identityRow
-            if usage.service == .codex {
-                quotaColumn(quotaItems[0], alignment: .leading)
-                DashQuotaBar(remaining: quotaItems[0].window?.remainingPercent, tint: quotaItems[0].color, height: Self.barHeight)
+            if usage.service == .codex, let weekly = quotaItems.first(where: { $0.id == "weekly" }) {
+                quotaColumn(weekly, alignment: .leading)
+                DashQuotaBar(remaining: weekly.window?.remainingPercent, tint: weekly.color, height: Self.barHeight)
                 codexStatsStacked
             } else {
-                ForEach(quotaItems) { item in
+                ForEach(quotaItems.filter { $0.kind == .window }) { item in
                     quotaColumn(item, alignment: .leading)
                 }
-                if let primary = quotaItems.first {
+                if let primary = gaugeItem {
                     DashQuotaBar(remaining: primary.window?.remainingPercent, tint: primary.color, height: Self.barHeight)
                 }
             }
@@ -334,7 +336,7 @@ struct AccountCardView: View {
 
     private var quotaBlock: some View {
         let items = quotaItems
-        let blockWidth: CGFloat = usage.service == .claude ? 232 : Self.barWidth
+        let blockWidth: CGFloat = 232
         return VStack(spacing: 2) {
             HStack(alignment: .top, spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -344,20 +346,63 @@ struct AccountCardView: View {
                             .frame(width: 1, height: 40)
                             .padding(.top, 5)
                     }
-                    quotaColumn(item, alignment: .center)
-                        .frame(maxWidth: .infinity)
+                    Group {
+                        switch item.kind {
+                        case .window: quotaColumn(item, alignment: .center)
+                        case .resetCredits: resetCreditColumn(item)
+                        case .tokens: tokenColumn(item)
+                        case .empty: Color.clear
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
             .frame(height: Self.quotaRowHeight)
 
             DashQuotaBar(
-                remaining: items.first?.window?.remainingPercent,
-                tint: items.first?.color ?? accent,
+                remaining: gaugeItem?.window?.remainingPercent,
+                tint: gaugeItem?.color ?? accent,
                 height: Self.barHeight
             )
             .padding(.leading, max(0, blockWidth - Self.barWidth))
         }
         .frame(maxWidth: blockWidth)
+    }
+
+    private var lockedQuotaBlock: some View {
+        let items = quotaItems
+        let columnWidth = (Self.lockedBlockWidth - 2) / 3
+        return VStack(spacing: 2) {
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(CCMBDash.divider)
+                            .frame(width: 1, height: 40)
+                            .padding(.top, 5)
+                            .opacity(item.kind == .empty || items[index - 1].kind == .empty ? 0 : 1)
+                    }
+                    Group {
+                        switch item.kind {
+                        case .window: quotaColumn(item, alignment: .center)
+                        case .resetCredits: resetCreditColumn(item)
+                        case .tokens: tokenColumn(item)
+                        case .empty: Color.clear
+                        }
+                    }
+                    .frame(width: columnWidth)
+                }
+            }
+            .frame(width: Self.lockedBlockWidth, height: Self.quotaRowHeight)
+
+            DashQuotaBar(
+                remaining: gaugeItem?.window?.remainingPercent,
+                tint: gaugeItem?.color ?? accent,
+                height: Self.barHeight
+            )
+            .padding(.leading, Self.lockedBlockWidth - Self.barWidth)
+        }
+        .frame(width: Self.lockedBlockWidth)
     }
 
     private func quotaColumn(_ item: QuotaItem, alignment: HorizontalAlignment) -> some View {
@@ -412,18 +457,55 @@ struct AccountCardView: View {
 
     // MARK: Codex stats
 
-    private var codexStats: some View {
-        HStack(alignment: .top, spacing: 0) {
-            statColumn(title: tokenLabel, value: tokenText, color: CCMBDash.ink)
-            statDivider
-            statColumn(
-                title: "리셋권",
-                value: resetCreditCount.map { "\($0)개" } ?? "—",
-                color: accent
-            )
-            statDivider
-            expiryColumn
+    /// 첫 열: 한 줄 헤더 '리셋권 N개' 아래에 만료 날짜를 작은 두 줄로 둔다.
+    private func resetCreditColumn(_ item: QuotaItem) -> some View {
+        let lines = expiryLines
+        return VStack(spacing: 0) {
+            Text(item.label)
+                .font(.system(size: fs(12)))
+                .foregroundStyle(CCMBDash.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(height: 13)
+            VStack(spacing: 0) {
+                if lines.isEmpty {
+                    Text(expiryEmptyText)
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(CCMBDash.muted)
+                        .lineLimit(1)
+                } else {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 8.5))
+                            .monospacedDigit()
+                            .foregroundStyle(CCMBDash.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+            }
+            .frame(height: 38, alignment: .center)
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func tokenColumn(_ item: QuotaItem) -> some View {
+        VStack(spacing: 0) {
+            Text(item.label)
+                .font(.system(size: fs(12)))
+                .foregroundStyle(CCMBDash.muted)
+                .lineLimit(1)
+                .frame(height: 13)
+            Text(tokenText)
+                .font(.system(size: fs(16), weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(CCMBDash.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(height: 26)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var codexStatsStacked: some View {
@@ -432,13 +514,6 @@ struct AccountCardView: View {
             statColumn(title: "리셋권", value: resetCreditCount.map { "\($0)개" } ?? "—", color: accent)
             expiryColumn
         }
-    }
-
-    private var statDivider: some View {
-        Rectangle()
-            .fill(CCMBDash.divider)
-            .frame(width: 1, height: 38)
-            .padding(.top, 2)
     }
 
     private func statColumn(title: String, value: String, color: Color) -> some View {
@@ -492,7 +567,7 @@ struct AccountCardView: View {
 
     private func accessibilitySummary(notice: String?, chart: String?) -> String {
         var parts = ["\(serviceName) \(accountID)"]
-        for item in quotaItems {
+        for item in quotaItems where item.kind == .window {
             if let percent = item.window?.remainingPercent {
                 var entry = "\(item.label) 남음 \(CCMBFormat.percent(percent))"
                 if let resetsAt = item.window?.resetsAt { entry += ", 초기화 \(CCMBFormat.resetTime(resetsAt))" }
@@ -504,7 +579,7 @@ struct AccountCardView: View {
         if usage.service == .codex {
             parts.append("\(tokenLabel) \(tokenText)")
             parts.append("리셋권 \(resetCreditCount.map { "\($0)개" } ?? "정보 없음")")
-            parts.append(expiryLines.isEmpty ? "리셋권 만료 \(expiryEmptyText)" : "리셋권 만료 \(expiryLines.joined(separator: ", "))")
+            parts.append(allExpiryLines.isEmpty ? "리셋권 만료 \(expiryEmptyText)" : "리셋권 만료 \(allExpiryLines.joined(separator: ", "))")
         }
         if let notice { parts.append(notice) }
         if let chart { parts.append(chart) }

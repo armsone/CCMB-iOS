@@ -4,21 +4,17 @@ import SwiftUI
 /// charcoal ink instead of pure black, and the signal red reserved for small
 /// structural accents (경고, 활성 표시) — never decoration.
 enum CCMBTheme {
-    /// #E41E25 — the Mac app's structural accent.
-    static let signalRed = Color(red: 0xE4 / 255, green: 0x1E / 255, blue: 0x25 / 255)
+    /// 낮은 잔량·오류 강조색: 선택된 병기스타일 팔레트의 danger.
+    static var signalRed: Color { CCMBPalette.current.danger }
 
-    /// Charcoal ink for gauges and emphasized values; follows dark mode.
-    static let charcoal = Color(UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.86, green: 0.87, blue: 0.88, alpha: 1)
-            : UIColor(red: 0.19, green: 0.20, blue: 0.22, alpha: 1)
-    })
+    /// 게이지와 강조 수치의 잉크: 선택된 팔레트의 본문색.
+    static var charcoal: Color { CCMBPalette.current.text }
 
     /// Remaining percentages below this switch the gauge to signal red.
     static let lowRemainingThreshold: Double = 10
 
     static func gaugeTint(remainingPercent: Double?) -> Color {
-        guard let remainingPercent else { return .secondary }
+        guard let remainingPercent else { return CCMBPalette.current.muted }
         return remainingPercent < lowRemainingThreshold ? signalRed : charcoal
     }
 
@@ -184,18 +180,22 @@ enum CCMBFormat {
     }
 }
 
-/// 승인된 라이트 카드 대시보드 전용 색. 전역 테마 선택은 건드리지 않고
-/// 대시보드만 이 값을 쓴다(밝은 하늘색 바탕, 흰 카드, 청회색 보조 글자).
+/// 대시보드 색: 선택된 병기스타일 팔레트를 따른다(서비스 식별색은 그대로 둔다).
 enum CCMBDash {
-    static let canvasTop = Color(.sRGB, red: 240/255.0, green: 249/255.0, blue: 253/255.0, opacity: 1)
-    static let canvasBottom = Color(.sRGB, red: 233/255.0, green: 246/255.0, blue: 254/255.0, opacity: 1)
-    static let card = Color.white
-    static let ink = Color(.sRGB, red: 0.04, green: 0.05, blue: 0.08, opacity: 1)
-    static let muted = Color(.sRGB, red: 0.345, green: 0.424, blue: 0.627, opacity: 1)
-    static let track = Color(.sRGB, red: 229/255.0, green: 233/255.0, blue: 238/255.0, opacity: 1)
-    static let divider = Color(.sRGB, red: 0.89, green: 0.91, blue: 0.945, opacity: 1)
-    static let grid = Color(.sRGB, red: 0.80, green: 0.85, blue: 0.92, opacity: 1)
-    static let codexIcon = Color(.sRGB, red: 2/255.0, green: 23/255.0, blue: 44/255.0, opacity: 1)
+    static var canvasTop: Color { CCMBPalette.current.bg }
+    static var canvasBottom: Color { CCMBPalette.current.surface2 }
+    static var card: Color { CCMBPalette.current.card }
+    static var ink: Color { CCMBPalette.current.text }
+    static var muted: Color { CCMBPalette.current.muted }
+    static var track: Color { CCMBPalette.current.surface2 }
+    static var divider: Color { CCMBPalette.current.border }
+    static var grid: Color { CCMBPalette.current.border2 }
+    /// Codex 아이콘 바탕: 밝은 테마는 진한 남색, 어두운 테마는 카드와 구분되는 surface2.
+    static var codexIcon: Color {
+        CCMBPalette.current.isDark
+            ? CCMBPalette.current.surface2
+            : Color(.sRGB, red: 2/255.0, green: 23/255.0, blue: 44/255.0, opacity: 1)
+    }
     /// Claude 산호색(카드 아이콘·수치·막대·24시간 선이 같은 색).
     static let claude = Color(.sRGB, red: 250/255.0, green: 96/255.0, blue: 50/255.0, opacity: 1)
     /// 페이블(Fable) 주간 수치 색.
