@@ -179,6 +179,13 @@ final class SnapshotStore: ObservableObject {
     /// bounded refresh wait ran out before the job finished.
     @Published private(set) var nasRefreshBusy = false
 
+    /// Playground task counts; independent of the usage snapshot. The last
+    /// successful value is kept when a later read fails.
+    @Published private(set) var nasTaskStatus: NASTaskStatus?
+    @Published private(set) var nasTaskStatusAt: Date?
+    @Published private(set) var nasTaskStatusFailed = false
+    private var nasTaskStatusInFlight = false
+
     /// Fixed playground address, shared by login and usage reads.
     let nasBaseURLString = NASConfig.baseURLString
     /// True while the first NAS connect attempt (after login) is in flight.
@@ -592,6 +599,7 @@ final class SnapshotStore: ObservableObject {
                 scheduleAutomaticRefresh()
                 // Gemini 온라인 별도 수집은 중단한다.
                 refreshNASHistory(generation: myGeneration)
+                refreshNASTaskStatus()
             } catch is CancellationError {
                 return
             } catch {
@@ -616,6 +624,31 @@ final class SnapshotStore: ObservableObject {
     /// since a forced collection can take up to ~65 seconds.
     func refreshFromNAS(isAutomatic: Bool = false) {
         Task { await performNASRefresh(isAutomatic: isAutomatic) }
+        refreshNASTaskStatus()
+    }
+
+    private func refreshNASTaskStatus() {
+        guard preferredSource == .nas, !nasTaskStatusInFlight else { return }
+        nasTaskStatusInFlight = true
+        Task {
+            defer { nasTaskStatusInFlight = false }
+            // Captured before the request starts (after any manual refresh
+            // queued ahead of us has bumped the generation) so a source
+            // switch or reconnect while in flight drops success and failure.
+            let myGeneration = generation
+            do {
+                let status = try await nasClient.fetchTaskStatus()
+                guard myGeneration == generation, preferredSource == .nas else { return }
+                nasTaskStatus = status
+                nasTaskStatusAt = status.capturedAt
+                nasTaskStatusFailed = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard myGeneration == generation, preferredSource == .nas else { return }
+                nasTaskStatusFailed = true
+            }
+        }
     }
 
     private func performNASRefresh(isAutomatic: Bool) async {

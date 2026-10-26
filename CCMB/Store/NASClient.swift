@@ -276,6 +276,18 @@ struct NASSnapshotClient {
         return try await flow.run(refresh: refresh)
     }
 
+    /// `GET /api/ccmb/task-status`; independent of the usage snapshot.
+    func fetchTaskStatus() async throws -> NASTaskStatus {
+        let base = NASConfig.baseURL
+        guard let cookie = await Self.sessionCookie(for: base) else { throw NASFetchError.notAuthenticated }
+        let url = base.appendingPathComponent("api/ccmb/task-status")
+        let (data, response) = try await Self.request(url: url, cookie: cookie, timeoutIntervalForRequest: 10, timeoutIntervalForResource: 12)
+        guard let http = response as? HTTPURLResponse, Self.isSameOrigin(http.url, as: base),
+              http.statusCode == 200, let status = NASTaskStatus.parse(data)
+        else { throw NASFetchError.network }
+        return status
+    }
+
     /// `scheme://host[:port]` of the configured NAS, exactly as the server
     /// compares it against `Origin`.
     static func origin(of url: URL) -> String? {

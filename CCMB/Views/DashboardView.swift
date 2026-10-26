@@ -111,6 +111,8 @@ struct DashboardView: View {
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(CCMBDash.ink)
                     .lineLimit(1)
+                    .layoutPriority(1)
+                NASTaskStatusPill()
                 Spacer(minLength: 8)
                 CompactRefreshControl()
                 appearanceMenu

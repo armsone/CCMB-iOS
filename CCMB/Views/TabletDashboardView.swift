@@ -84,6 +84,8 @@ struct TabletDashboardView: View {
                 .font(.system(size: 26, weight: .bold))
                 .foregroundStyle(CCMBDash.ink)
                 .lineLimit(1)
+                .layoutPriority(1)
+            NASTaskStatusPill()
             Spacer(minLength: 16)
             syncView
             Spacer(minLength: 16)
@@ -188,7 +190,7 @@ struct TabletDashboardView: View {
 
     // MARK: - Portrait Grid (2 columns x 3 rows equal cells)
     // Row 1: Weather+Clock / Codex
-    // Row 2: Claude / Gemini 1
+    // Row 2: Gemini 1 / Claude
     // Row 3: Gemini 2 / Gemini 3
     @ViewBuilder
     private func portraitGrid(history: DashboardHistory, totalWidth: CGFloat, availableHeight: CGFloat) -> some View {
@@ -209,17 +211,17 @@ struct TabletDashboardView: View {
                 }
             }
 
-            // Row 2: Claude / Gemini 1
+            // Row 2: Gemini 1 / Claude (Claude sits directly beneath Codex)
             HStack(spacing: Self.sectionGap) {
-                if let claude = snapshot.services[.claude] {
-                    serviceCardLink(usage: claude, history: history, height: cellH)
+                if let gemini = snapshot.services[.gemini] {
+                    serviceCardLink(usage: gemini, history: history, height: cellH)
                         .frame(width: colW)
                 } else {
                     Spacer().frame(width: colW, height: cellH)
                 }
 
-                if let gemini = snapshot.services[.gemini] {
-                    serviceCardLink(usage: gemini, history: history, height: cellH)
+                if let claude = snapshot.services[.claude] {
+                    serviceCardLink(usage: claude, history: history, height: cellH)
                         .frame(width: colW)
                 } else {
                     Spacer().frame(width: colW, height: cellH)
