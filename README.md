@@ -1,6 +1,6 @@
 # CCMB for iPhone
 
-Mac 메뉴 막대 앱 [CCMB](../CCMB-MacOS)의 원격 동반 대시보드입니다.
+iPhone 및 iPad용 AI 사용량 모바일 대시보드 앱입니다. (기존 독립형 Mac CCMB 앱/저장소는 퇴역하였으며, Mac 측 기능은 [HTT](https://github.com/armsone/HTT-MacOS)의 서버 현황 기능(`CCMBModule`)으로 통합되었습니다.)
 놀이터 웹사이트(`https://hanstree.synology.me:5443`)를 직접 운영 중인 NAS에서
 Codex·Claude·Gemini(그리고 보조로 Grok)의 남은 사용량을 읽어 보여 줍니다.
 

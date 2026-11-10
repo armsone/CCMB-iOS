@@ -2,8 +2,8 @@
 
 # CCMB-iOS 작업 지침
 
-CCMB-iOS는 Mac 메뉴 막대 앱 CCMB(`/Users/armsone/git/CCMB-MacOS`)의 원격 동반 대시보드다.
-Mac이 CLI 사용량을 읽어 사용자의 CloudKit 개인 데이터베이스에 스냅샷을 올리고,
+CCMB-iOS는 iPhone/iPad용 독립 모바일 대시보드 앱이다. 독립형 Mac CCMB 앱/저장소는 퇴역하였으며, Mac 측 기능은 HTT(`/Users/armsone/git/HTT-MacOS/CCMBModule`)의 서버 현황 기능으로 통합되었다.
+Mac이 CLI 사용량을 읽어 사용자의 CloudKit 개인 데이터베이스에 스냅샷을 올리거나 과거 중계했던 구조를 바탕으로 하며,
 iPhone은 같은 Apple ID의 개인 데이터베이스에서 읽기만 한다.
 
 ## 아키텍처 원칙
@@ -12,7 +12,7 @@ iPhone은 같은 Apple ID의 개인 데이터베이스에서 읽기만 한다.
   개인 DB의 고정 레코드 하나를 읽고, `Store/SnapshotStore.swift`가 상태를 소유한다.
   Dropbox·Google Drive·iCloud Drive 등의 `CCMB-usage-v1.json`을 Files 앱에서 한 번
   선택하고 보안 bookmark로 다시 읽는 흐름을 보조 원격 수단으로 유지한다.
-- **iPhone은 절대 쓰지 않는다.** CloudKit 업로드는 Mac 쪽 `CloudSyncUploader.swift`만 한다.
+- **iPhone은 절대 쓰지 않는다.** CloudKit 업로드는 Mac 쪽(HTT의 CCMB 모듈)에서 담당한다.
   공개 데이터베이스는 어느 쪽에서도 사용하지 않는다.
 - **CloudKit 계약은 두 저장소가 동일해야 한다.** 컨테이너 `iCloud.com.armsone.ccmb`,
   레코드 타입 `CCMBUsageSnapshot`, 레코드 이름 `latest-usage-v1`, 필드
